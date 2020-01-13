@@ -17,9 +17,10 @@
 
 from absl import logging
 
-import tensorflow as tf
+import delta.compat as tf
 #pylint: disable=import-error
 from tensorflow.keras.callbacks import Callback
+from tensorflow.keras.callbacks import ModelCheckpoint
 from tensorflow.keras import backend as K
 #pylint: disable=no-name-in-module
 from tensorflow.python.data.ops import iterator_ops
@@ -45,7 +46,7 @@ class TokenErrMetricCallBack(Callback):
   def on_epoch_end(self, epoch, logs={}):
     '''computing token error'''
 
-    cur_session = K.get_session()
+    cur_session = tf.keras.backend.get_session()
     target_seq_list, predict_seq_list = [], []
 
     is_py_sequence = True
@@ -68,7 +69,7 @@ class TokenErrMetricCallBack(Callback):
       batch_target = batch_data['targets'].tolist()
       batch_predict = self.func(batch_input)[0]
 
-      if self.decoder_type == 'ctc':
+      if self.decoder_type == 'argmax':
         predict_seq_list += py_ctc.ctc_greedy_decode(
             batch_predict, 0, unique=True)
       else:
@@ -94,3 +95,36 @@ class TokenErrMetricCallBack(Callback):
         epoch + 1, val_token_errors))
     logging.info("Epoch {}: loss on train is {}".format(epoch + 1,
                                                         logs['loss']))
+
+
+class ParallelModelCheckpoint(ModelCheckpoint):
+  '''Callback to save multi_gpu_model'''
+
+  #pylint: disable=too-many-arguments
+  def __init__(self,
+               model,
+               filepath,
+               monitor='val_loss',
+               verbose=0,
+               save_best_only=False,
+               save_weights_only=False,
+               mode='auto',
+               save_freq='epoch',
+               load_weights_on_restart=False,
+               period=1):
+    self.model_to_save = model
+    super().__init__(
+        filepath=filepath,
+        monitor=monitor,
+        verbose=verbose,
+        save_best_only=save_best_only,
+        save_weights_only=save_weights_only,
+        mode=mode,
+        save_freq=save_freq,
+        load_weights_on_restart=load_weights_on_restart,
+        period=period)
+
+  #pylint: disable=unused-argument
+  def set_model(self, model):
+    '''set the model to saved'''
+    super().set_model(self.model_to_save)

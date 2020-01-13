@@ -18,11 +18,12 @@
 import os
 from pathlib import Path
 from absl import logging
-import tensorflow as tf
+import delta.compat as tf
 
 from delta import utils
 from delta.utils.solver.raw_seq2seq_solver import RawS2SSolver
 from delta.utils.register import import_all_modules_for_register
+from delta import PACKAGE_ROOT_DIR
 
 # pylint: disable=missing-docstring
 
@@ -30,10 +31,10 @@ from delta.utils.register import import_all_modules_for_register
 class RawS2SSolverTest(tf.test.TestCase):
 
   def setUp(self):
-    main_root = os.environ['MAIN_ROOT']
-    main_root = Path(main_root)
-    self.config_file = main_root.joinpath(
-        'egs/mock_text_seq2seq_data/seq2seq/v1/config/transformer-s2s.yml')
+    super().setUp()
+    package_root = Path(PACKAGE_ROOT_DIR)
+    self.config_file = package_root.joinpath(
+        '../egs/mock_text_seq2seq_data/seq2seq/v1/config/transformer-s2s.yml')
     self.config = utils.load_config(self.config_file)
     import_all_modules_for_register()
 
@@ -66,7 +67,7 @@ class RawS2SSolverTest(tf.test.TestCase):
     # load the model and run
     graph = tf.Graph()
     with graph.as_default():  # pylint: disable=not-context-manager
-      with self.session() as sess:
+      with self.cached_session(use_gpu=False, force_gpu=False) as sess:
         tf.saved_model.loader.load(sess, [tf.saved_model.tag_constants.SERVING],
                                    export_path)
 

@@ -16,14 +16,17 @@
 '''
 A series of models for speaker classification.
 '''
+import math
 from absl import logging
-import tensorflow as tf
+import delta.compat as tf
 import tensorflow.keras.layers as keras_layers
 
 from delta import utils
 from delta.layers import common_layers
 from delta.models.base_model import RawModel
 from delta.utils.register import registers
+from delta.utils.loss.loss_utils import arcface_loss
+from delta.utils.hparam import HParams
 
 #pylint: disable=invalid-name
 #pylint: disable=too-many-locals
@@ -45,7 +48,6 @@ class SpeakerBaseRawModel(RawModel):
     self.audioconf = self.taskconf['audio']
 
     self.attention = self.netconf['attention']
-    self.vocab_size = self.taskconf['text']['vocab_size']
     frame_per_sec = 1 / self.taskconf['audio']['winstep']
     self.input_len = self.taskconf['audio']['clip_size'] * frame_per_sec
     self.input_type = 'samples' if self.taskconf[
@@ -61,7 +63,7 @@ class SpeakerBaseRawModel(RawModel):
     self.std = None
     self.train = None
 
-  def preprocess(self, inputs, input_text):
+  def preprocess(self, inputs):
     ''' Speech preprocessing. '''
     with tf.variable_scope('feature'):
       if self.input_type == 'samples':
@@ -84,22 +86,27 @@ class SpeakerBaseRawModel(RawModel):
           feats = inputs
         else:
           raise ValueError('Error cmvn_type %s.' % (cmvn_type))
-    return feats, input_text
+    return feats
 
   def call(self, features, **kwargs):
     ''' Implementation of __call__(). '''
     self.train = kwargs['training']
     feats = tf.identity(features['inputs'], name='feats')
-    texts = features['texts']
+    logging.info(features)
+    if 'labels' in features:
+      labels = features['labels']
+    else:
+      # serving export mode
+      labels = None
 
     with tf.variable_scope('model', reuse=tf.AUTO_REUSE):
-      feats, texts = self.preprocess(feats, texts)
-      logits = self.model(feats, texts)
+      feats = self.preprocess(feats)
+      logits = self.model(feats, labels)
     return logits
 
-  def model(self, inputs, input_text):
+  def model(self, feats, labels):
     ''' Stub function. '''
-    return None
+    return NotImplementedError('Stub function.')
 
   def linear_block(self, x):
     '''
@@ -107,43 +114,51 @@ class SpeakerBaseRawModel(RawModel):
     x: shape [batch, time, feat, channel]
     output: shape [b, t, f]
     '''
-    times_t = tf.shape(x)[1]
+    batch_t = tf.shape(x)[0]
+    time_t = tf.shape(x)[1]
     feat, channel = x.shape.as_list()[2:]
     linear_num = self.netconf['linear_num']
+
     if linear_num > 0:
       with tf.variable_scope('linear'):
-        x = tf.reshape(x, [-1, feat * channel])
+        x = tf.reshape(x, [batch_t * time_t, feat * channel])
+
         if self.netconf['use_dropout']:
           x = tf.layers.dropout(
               x, self.netconf['dropout_rate'], training=self.train)
-        x = common_layers.linear(x, 'linear1',
-                                 [feat * channel, linear_num])
+
+        x = common_layers.linear(x, 'linear1', [feat * channel, linear_num])
+
         x = tf.nn.relu(x)
+
         if self.netconf['use_bn']:
           bn_name = 'bn_linear'
           x = tf.layers.batch_normalization(
               x, axis=-1, momentum=0.9, training=self.train, name=bn_name)
+
+        x = tf.reshape(x, [batch_t, time_t, linear_num])
     else:
       logging.info('linear_num <= 0, only apply reshape.')
-      x = tf.reshape(x, [-1, times_t, feat * channel])
+      x = tf.reshape(x, [batch_t, time_t, feat * channel])
+
     return x
 
   def lstm_layer(self, x):
     ''' LSTM layers. '''
     if self.netconf['use_lstm_layer']:
       with tf.variable_scope('lstm'):
-        cell_fw = tf.contrib.rnn.BasicLSTMCell(
+        cell_fw = tf.nn.rnn_cell.BasicLSTMCell(
             self.netconf['cell_num'], forget_bias=1.0)
         if self.netconf['use_dropout']:
-          cell_fw = tf.contrib.rnn.DropoutWrapper(
+          cell_fw = tf.nn.RNNCellDropoutWrapper(
               cell=cell_fw,
               output_keep_prob=1 -
               self.netconf['dropout_rate'] if self.train else 1.0)
 
-        cell_bw = tf.contrib.rnn.BasicLSTMCell(
+        cell_bw = tf.nn.rnn_cell.BasicLSTMCell(
             self.netconf['cell_num'], forget_bias=1.0)
         if self.netconf['use_dropout']:
-          cell_bw = tf.contrib.rnn.DropoutWrapper(
+          cell_bw = tf.nn.RNNCellDropoutWrapper(
               cell=cell_bw,
               output_keep_prob=1 -
               self.netconf['dropout_rate'] if self.train else 1.0)
@@ -160,92 +175,133 @@ class SpeakerBaseRawModel(RawModel):
       outputs = x
     return outputs
 
-  def pooling_layer(self, x):
+  def pooling_layer(self, x, pooling_type=None):
     '''
       Add a pooling layer across the whole utterance.
-      Input: [NHW]
-        --> Reduce along H
+      Input: [B, T, D]
+        --> Reduce along T
 
-      Statistics pooling output: [N, W * 2]
-      Average pooling output: [N, W]
+      Statistics pooling output: [B, D * 2]
+      Average pooling output: [B, D]
     '''
-    pooling_type = self.netconf['frame_pooling_type']
+    assert_rank3 = tf.debugging.assert_rank(x, 3)
+    with tf.control_dependencies([assert_rank3]):
+      x = tf.identity(x)
+
+    pooling_type = pooling_type if pooling_type else self.netconf[
+        'frame_pooling_type']
     if pooling_type == 'stats':
-      with tf.variable_scope('stats_pooling'):
+      with tf.name_scope('stats_pooling'):
         mean, var = tf.nn.moments(x, 1)
         x = tf.concat([mean, tf.sqrt(var + 1e-6)], 1)
     elif pooling_type == 'average':
-      with tf.variable_scope('average_pooling'):
+      with tf.name_scope('average_pooling'):
         mean, _ = tf.nn.moments(x, 1)
         x = mean
     else:
       raise ValueError('Unsupported frame_pooling_type: %s' % (pooling_type))
-    return x
 
-  def text_layer(self, x, input_text):
-    ''' Text layer. Might be useless in speaker model. '''
-    with tf.variable_scope('text'):
-      embedding_chars_expanded = common_layers.embedding_look_up(
-          input_text, self.vocab_size, self.netconf['embedding_dim'])
-      h_pool_flat = common_layers.conv_pool(
-          embedding_chars_expanded,
-          list(map(int, self.netconf['filter_sizes'])),
-          self.netconf['embedding_dim'], self.netconf['num_filters'],
-          input_text.shape[1])
-      outputs = tf.concat((x, h_pool_flat), axis=1)
-    return outputs
+    assert_rank2 = tf.debugging.assert_rank(x, 2)
+    with tf.control_dependencies([assert_rank2]):
+      x = tf.identity(x)
+
+    return x
 
   def dense_layer(self, x):
     ''' Embedding layers. '''
     with tf.variable_scope('dense'):
       shape = x.shape[-1].value
       hidden_dims = self.netconf['hidden_dims']
-      hidden_idx = 1
       y = x
       use_bn = self.netconf['use_bn']
-      for hidden in hidden_dims:
-        embedding = common_layers.linear(
+      remove_nonlin = self.netconf['remove_last_nonlinearity']
+
+      for idx, hidden in enumerate(hidden_dims):
+        last_layer = idx == (len(hidden_dims) - 1)
+        layer_add_nonlin = not last_layer or not remove_nonlin
+        y = common_layers.linear(
             y,
-            'dense-matmul-%d' % (hidden_idx), [shape, hidden],
-            has_bias=not use_bn)
+            'dense-matmul-%d' % (idx + 1), [shape, hidden],
+            has_bias=(layer_add_nonlin or not use_bn))
         shape = hidden
-        y = tf.nn.relu(embedding)
+        embedding = y
+        if layer_add_nonlin:
+          y = tf.nn.relu(y)
         if use_bn:
           y = tf.layers.batch_normalization(
               y,
               axis=-1,
               momentum=0.99,
               training=self.train,
-              name='dense-bn-%d' % (hidden_idx))
-        if self.netconf['use_dropout']:
+              name='dense-bn-%d' % (idx + 1))
+        if self.netconf['use_dropout'] and layer_add_nonlin:
           y = tf.layers.dropout(
               y, self.netconf['dropout_rate'], training=self.train)
-        hidden_idx += 1
+      if self.netconf['embedding_after_linear']:
+        logging.info('Output embedding right after linear layer.')
+      else:
+        logging.info('Output embedding after non-lin, batch norm and dropout.')
+        embedding = y
     return embedding, y
 
-  def logits_layer(self, x):
+  def arcface_layer(self, inputs, labels, output_num, weights):
+    ''' ArcFace layer. '''
+    params = self.netconf['arcface_params']
+    s = params['scale']
+    m = params['margin']
+    limit_to_pi = params['limit_to_pi']
+    return arcface_loss(
+        inputs, labels, output_num, weights, s=s, m=m, limit_to_pi=limit_to_pi)
+
+  def logits_layer(self, x, labels):
     ''' Logits layer to further produce softmax. '''
+    if labels is None:
+      # serving export mode, no need for logits
+      return x
+
+    output_num = self.taskconf['classes']['num']
+    logits_type = self.netconf['logits_type']
+    logits_shape = [x.shape[-1].value, output_num]
+
     with tf.variable_scope('logits'):
-      logits = common_layers.linear(
-          x, 'logits-matmul',
-          [x.shape[-1].value, self.taskconf['classes']['num']])
-    return logits
+      init_type = self.netconf['logits_weight_init']['type']
+      if init_type == 'truncated_normal':
+        stddev = self.netconf['logits_weight_init']['stddev']
+        init = tf.truncated_normal_initializer(stddev=stddev)
+      elif init_type == 'xavier_uniform':
+        init = tf.initializers.glorot_uniform()
+      elif init_type == 'xavier_norm':
+        init = tf.initializers.glorot_normal()
+      else:
+        raise ValueError('Unsupported weight init type: %s' % (init_type))
+
+      weights = tf.get_variable(
+          name='weights', shape=logits_shape, initializer=init)
+
+      if logits_type == 'linear':
+        bias = tf.get_variable(
+            name='bias',
+            shape=logits_shape[1],
+            initializer=tf.constant_initializer(0.0))
+        return tf.matmul(x, weights) + bias
+      elif logits_type == 'linear_no_bias':
+        return tf.matmul(x, weights)
+      elif logits_type == 'arcface':
+        return self.arcface_layer(x, labels, output_num, weights)
 
 
 @registers.model.register
 class SpeakerCRNNRawModel(SpeakerBaseRawModel):
   ''' A speaker model with simple 2D conv layers. '''
 
-  def model(self, inputs, input_text):
+  def model(self, feats, labels):
     ''' Build the model. '''
-    x, _ = self.conv_block(inputs, depthwise=False)
+    x, _ = self.conv_block(feats, depthwise=False)
     x = self.linear_block(x)
     x = self.lstm_layer(x)
     x = self.pooling_layer(x)
-    if self.taskconf['text']['enable']:
-      x = self.text_layer(x, input_text)
     embedding, dense_output = self.dense_layer(x)
-    logits = self.logits_layer(dense_output)
+    logits = self.logits_layer(dense_output, labels)
     model_outputs = {'logits': logits, 'embeddings': embedding}
     return model_outputs
 
@@ -305,14 +361,12 @@ class SpeakerCRNNRawModel(SpeakerBaseRawModel):
 class SpeakerTDNNRawModel(SpeakerBaseRawModel):
   ''' A speaker model with TDNN layers. '''
 
-  def model(self, inputs, input_text):
+  def model(self, feats, labels):
     ''' Build the model. '''
-    x, _ = self.tdnn_block(inputs)
+    x, _ = self.tdnn_block(feats)
     x = self.pooling_layer(x)
-    if self.taskconf['text']['enable']:
-      x = self.text_layer(x, input_text)
     embedding, dense_output = self.dense_layer(x)
-    logits = self.logits_layer(dense_output)
+    logits = self.logits_layer(dense_output, labels)
     model_outputs = {'logits': logits, 'embeddings': embedding}
     return model_outputs
 
@@ -352,15 +406,13 @@ class SpeakerTDNNRawModel(SpeakerBaseRawModel):
         unit_name = 'unit-' + str(index + 1)
         with tf.variable_scope(unit_name):
           tdnn_name = 'tdnn-' + str(index + 1)
-          use_bn = self.netconf['use_bn']
-          has_bias = not use_bn
           x = common_layers.tdnn(
               x,
               tdnn_name,
               last_w,
               tdnn_contexts[index],
               channels[index + 1],
-              has_bias=has_bias,
+              has_bias=True,
               method=tdnn_method)
           last_w = channels[index + 1]
           x = tf.nn.relu(x)
@@ -380,15 +432,42 @@ class SpeakerTDNNRawModel(SpeakerBaseRawModel):
 class SpeakerResNetRawModel(SpeakerBaseRawModel):
   ''' A speaker model with ResNet layers. '''
 
-  def model(self, inputs, input_text):
+  @classmethod
+  def params(cls, config: dict = None):
+    embedding_size = 512
+
+    #hp = HParams(cls=cls)
+    hp = HParams(cls=cls)
+    hp.add_hparam('embedding_size', embedding_size)
+
+    if config is not None:
+      hp.override_from_dict(config)
+    return hp
+
+  def model(self, feats, labels):
     ''' Build the model. '''
-    x = self.resnet(inputs)
-    x = self.linear_block(x)
-    x = self.pooling_layer(x)
-    if self.taskconf['text']['enable']:
-      x = self.text_layer(x, input_text)
-    embedding, dense_output = self.dense_layer(x)
-    logits = self.logits_layer(dense_output)
+    x = self.resnet(feats)
+
+    with tf.variable_scope("avg_pooling"):
+      batch_t = tf.shape(x)[0]
+      time_t = tf.shape(x)[1]
+      feat, channel = x.shape.as_list()[2:]
+      x = tf.reshape(x, [batch_t, time_t, feat * channel])
+      x = self.pooling_layer(x, pooling_type='average')
+
+    with tf.variable_scope("output_layer"):
+      shape = x.shape.as_list()
+      shape = shape[-1]
+      hidden_dims = self.params().embedding_size
+      y = x
+      y = common_layers.linear(
+          y, 'dense-matmul', [shape, hidden_dims], has_bias=True)
+      y = tf.layers.batch_normalization(
+          y, axis=-1, momentum=0.99, training=self.train, name='dense-bn')
+      embedding = y
+      dense_output = y
+
+    logits = self.logits_layer(dense_output, labels)
     model_outputs = {'logits': logits, 'embeddings': embedding}
     return model_outputs
 
@@ -397,43 +476,47 @@ class SpeakerResNetRawModel(SpeakerBaseRawModel):
         x, axis=-1, momentum=0.9, training=self.train, name=bn_name)
     return x
 
-  def prelu_layer(self, x, name):
+  def prelu_layer(self, x, name, num_parameters=1, init=0.25):
+    if num_parameters == 1:
+      shape = 1
+    else:
+      shape = x.get_shape()[-1]
     alpha = tf.get_variable(
         name,
-        shape=x.get_shape()[-1],
+        shape=shape,
         dtype=x.dtype,
-        initializer=tf.constant_initializer(0.1))
+        initializer=tf.constant_initializer(init))
     return tf.maximum(0.0, x) + alpha * tf.minimum(0.0, x)
 
   def se_moudle(self, x, channels, reduction, name=''):
-    input = x
+    input_t = x
     x = tf.reduce_mean(x, [1, 2], name=name + '_avg', keep_dims=True)
     x = tf.layers.conv2d(
         x,
         channels // reduction, (1, 1),
-        use_bias=True,
+        use_bias=False,
         name=name + '_1x1_down',
         strides=(1, 1),
         padding='valid',
         data_format='channels_last',
         activation=None,
-        kernel_initializer=tf.contrib.layers.xavier_initializer(),
+        kernel_initializer=tf.initializers.glorot_uniform(),
         bias_initializer=tf.zeros_initializer())
     x = tf.nn.relu(x, name=name + '_1x1_down_relu')
 
     x = tf.layers.conv2d(
         x,
         channels, (1, 1),
-        use_bias=True,
+        use_bias=False,
         name=name + '_1x1_up',
         strides=(1, 1),
         padding='valid',
         data_format='channels_last',
         activation=None,
-        kernel_initializer=tf.contrib.layers.xavier_initializer(),
+        kernel_initializer=tf.initializers.glorot_uniform(),
         bias_initializer=tf.zeros_initializer())
     x = tf.nn.sigmoid(x, name=name + '_1x1_up_sigmoid')
-    return tf.multiply(input, x, name=name + '_mul')
+    return tf.multiply(input_t, x, name=name + '_mul')
 
   def resnet_layer(self, x, in_channel, out_channel, stride, dim_match,
                    block_name):
@@ -443,23 +526,39 @@ class SpeakerResNetRawModel(SpeakerBaseRawModel):
 
     short_cut = x
     if not dim_match:
-      short_cut = common_layers.conv2d(short_cut, conv_name_base + '1', (1, 1),
-                                       in_channel, out_channel, stride)
+      short_cut = common_layers.conv2d(
+          short_cut,
+          conv_name_base + '1',
+          filter_size=(1, 1),
+          in_channels=in_channel,
+          out_channels=out_channel,
+          strides=stride,
+          bias=False)
       short_cut = tf.layers.batch_normalization(
           short_cut,
           axis=-1,
           momentum=0.9,
           training=self.train,
           name=bn_name_base + '1')
+
     x = tf.layers.batch_normalization(
         x, axis=-1, momentum=0.9, training=self.train, name=bn_name_base + '2a')
-    x = common_layers.conv2d(x, conv_name_base + '2a', (3, 3), in_channel,
-                             out_channel, [1, 1])
+    x = common_layers.conv2d(
+        x,
+        conv_name_base + '2a', (3, 3),
+        in_channel,
+        out_channel, [1, 1],
+        bias=False)
     x = tf.layers.batch_normalization(
         x, axis=-1, momentum=0.9, training=self.train, name=bn_name_base + '2b')
     x = self.prelu_layer(x, name=prelu_name_base + '2b')
-    x = common_layers.conv2d(x, conv_name_base + '2b', (3, 3), out_channel,
-                             out_channel, stride)
+    x = common_layers.conv2d(
+        x,
+        conv_name_base + '2b', (3, 3),
+        out_channel,
+        out_channel,
+        stride,
+        bias=False)
     res = tf.layers.batch_normalization(
         x, axis=-1, momentum=0.9, training=self.train, name=bn_name_base + '2c')
 
@@ -504,13 +603,14 @@ class SpeakerResNetRawModel(SpeakerBaseRawModel):
     elif block_mode == 'ir_se':
       block = self.se_resnet_layer
 
-    x = block(x, in_channel, out_channel, stride, False, block_name='a')
+    x = block(
+        x, in_channel, out_channel, stride, dim_match=False, block_name='a')
     for i in range(1, layer_num):
       x = block(
           x,
           out_channel,
           out_channel, [1, 1],
-          True,
+          dim_match=True,
           block_name=chr(ord('a') + i))
 
     return x
@@ -529,8 +629,12 @@ class SpeakerResNetRawModel(SpeakerBaseRawModel):
     with tf.variable_scope('resnet'):
       x = tf.identity(inputs)
       with tf.variable_scope('input_layer'):
-        x = common_layers.conv2d(x, 'input_conv', (3, 3), self.input_channels,
-                                 filters_list[0], [1, 1])
+        x = common_layers.conv2d(
+            x,
+            'input_conv', (3, 3),
+            self.input_channels,
+            filters_list[0], [1, 1],
+            bias=False)
         x = tf.layers.batch_normalization(
             x, axis=-1, momentum=0.9, training=self.train, name='input_bn')
         x = self.prelu_layer(x, 'input_prelu')

@@ -19,7 +19,7 @@ import tempfile
 from pathlib import Path
 
 import numpy as np
-import tensorflow as tf
+import delta.compat as tf
 from absl import logging
 
 from delta import utils
@@ -32,7 +32,7 @@ class SpeakerClsTaskTest(tf.test.TestCase):
   ''' speaker task test'''
 
   def setUp(self):
-    ''' set up'''
+    super().setUp()
     import_all_modules_for_register()
     self.conf_str = '''
     data:
@@ -73,16 +73,9 @@ class SpeakerClsTaskTest(tf.test.TestCase):
           # cmvn
           cmvn: true # apply cmvn or generate cmvn
           cmvn_path: ./cmvn_speaker.npy # cmvn file
-        text:
-          enable: False
-          vocab_path: data/vocab/chars5004_attention.txt # path to vocab(default: 'vocab
-          vocab_size: 5004 # vocab size
-          max_text_len: 100 # max length for text
         classes:
           num: 2 
-          vocab:
-            normal: 0
-            conflict: 1
+          vocab: null
         num_parallel_calls: 12
         num_prefetch_batch: 2
         shuffle_buffer_size: 200000
@@ -124,9 +117,6 @@ class SpeakerClsTaskTest(tf.test.TestCase):
 
     solver:
       name: SpeakerSolver
-      quantization:
-        enable: false # whether to quantization model
-        quant_delay: 0 # Number of steps after which weights and activations are quantized during training
       adversarial:
         enable: false # whether to using adversiral training
         adv_alpha: 0.5 # adviseral alpha of loss
@@ -146,7 +136,6 @@ class SpeakerClsTaskTest(tf.test.TestCase):
           decay_rate: 0.99  # the lr decay rate
           decay_steps: 100  # the lr decay_step for optimizer
         clip_global_norm: 3.0 # clip global norm
-        multitask: False # whether is multi-task
       metrics:
         pos_label: 1 # int, same to sklearn
         cals:
@@ -244,19 +233,19 @@ class SpeakerClsTaskTest(tf.test.TestCase):
     # config after process
     self.config = self.solver.config
 
-    task_name = self.config['data']['task']['name']
-    self.task_class = registers.task[task_name]
-
   def tearDown(self):
     ''' tear down'''
 
   def test_generate_feat(self):
     ''' test generate feature'''
+    task_name = self.config['data']['task']['name']
+    task_class = registers.task[task_name]
+
     paths = []
     for mode in [utils.TRAIN, utils.EVAL, utils.INFER]:
       paths += self.config['data'][mode]['paths']
 
-    task = self.task_class(self.config, utils.INFER)
+    task = task_class(self.config, utils.INFER)
     task.generate_feat(paths, dry_run=False)
 
   def test_generate_cmvn(self):
@@ -269,7 +258,10 @@ class SpeakerClsTaskTest(tf.test.TestCase):
     paths = self.config['data'][utils.TRAIN]['paths']
     self.config['data'][utils.INFER]['paths'] = paths
 
-    task = self.task_class(self.config, utils.INFER)
+    task_name = self.config['data']['task']['name']
+    task_class = registers.task[task_name]
+
+    task = task_class(self.config, utils.INFER)
     task.generate_cmvn(dry_run=False)
 
     self.assertTrue(
@@ -280,13 +272,16 @@ class SpeakerClsTaskTest(tf.test.TestCase):
   def test_generate_data(self):
     ''' test generate data'''
     self.config['data']['task']['suffix'] = '.npy'
-    task = self.task_class(self.config, utils.TRAIN)
 
-    for inputs, texts, label, filename, clip_id, soft_labels in task.generate_data(
-    ):
+    task_name = self.config['data']['task']['name']
+    task_class = registers.task[task_name]
+
+    task = task_class(self.config, utils.TRAIN)
+
+    for inputs, label, filename, clip_id, soft_labels in task.generate_data():
       logging.info(
-          "feat shape:{} \ntext: {} \nlabels:{} \nfilename:{} \nclip_id:{}\nsoft_labels:{}"
-          .format(inputs.shape, texts, label, filename, clip_id, soft_labels))
+          "feat shape:{} \n labels:{} \nfilename:{} \nclip_id:{}\nsoft_labels:{}"
+          .format(inputs.shape, label, filename, clip_id, soft_labels))
       break
 
   #pylint: disable=too-many-locals
@@ -295,7 +290,9 @@ class SpeakerClsTaskTest(tf.test.TestCase):
     batch_size = 4
     self.config['solver']['optimizer']['batch_size'] = batch_size
 
-    task = self.task_class(self.config, utils.TRAIN)
+    task_name = self.config['data']['task']['name']
+    task_class = registers.task[task_name]
+    task = task_class(self.config, utils.TRAIN)
 
     dataset = task.input_fn(utils.TRAIN, batch_size, 1)()
 
@@ -305,7 +302,7 @@ class SpeakerClsTaskTest(tf.test.TestCase):
     clip_ids = features['clipid']
     soft_labels = features['soft_labels']
 
-    with self.session() as sess:
+    with self.cached_session(use_gpu=False, force_gpu=False) as sess:
       while True:
         batch_inputs, batch_labels, batch_files, batch_clipids, labels_onehot, batch_soft_labels = \
            sess.run([samples, labels, filenames, clip_ids, tf.one_hot(labels, 2), soft_labels])
@@ -318,7 +315,59 @@ class SpeakerClsTaskTest(tf.test.TestCase):
         logging.info("soft_labels: {}".format(batch_soft_labels))
         break
 
+  def test_speaker_utt_task_dataset(self):
+    task_name = 'SpeakerUttTask'
+    self.config['data']['task']['name'] = task_name
+    batch_size = 4
+    self.config['solver']['optimizer']['batch_size'] = batch_size
+
+    task_name = self.config['data']['task']['name']
+    task_class = registers.task[task_name]
+
+    for mode in (utils.TRAIN, utils.EVAL, utils.INFER):
+      task = task_class(self.config, mode)
+      dataset = task.input_fn(mode, batch_size, 1)()
+      features, one_hot_labels = dataset.make_one_shot_iterator().get_next()
+      samples = features['inputs']
+      filenames = features['filepath']
+      clip_ids = features['clipid']
+      labels = features['labels']
+
+      with self.cached_session(use_gpu=False, force_gpu=False) as sess:
+        while True:
+          batch_inputs, batch_labels, batch_files, batch_clipids, labels_onehot = \
+             sess.run([samples, labels, filenames, clip_ids, one_hot_labels])
+
+          del labels_onehot
+          logging.info("feat shape: {}".format(batch_inputs.shape))
+          logging.info("filename: {}".format(batch_files))
+          logging.info("clip id: {}".format(batch_clipids))
+          logging.info("labels: {}".format(batch_labels))
+          break
+
+  def test_speaker_utt_task_getitem(self):
+    task_name = 'SpeakerUttTask'
+    self.config['data']['task']['name'] = task_name
+    task_class = registers.task[task_name]
+
+    for mode in (utils.TRAIN, utils.EVAL, utils.INFER):
+      task = task_class(self.config, mode)
+      for i, (feats, labels) in enumerate(task):
+        logging.info(f"SpkUttTask: __getitem__: {feats.keys()} {labels}")
+
+  def test_speaker_utt_task_generate_data(self):
+    task_name = 'SpeakerUttTask'
+    self.config['data']['task']['name'] = task_name
+    task_class = registers.task[task_name]
+    for mode in (utils.TRAIN, utils.EVAL, utils.INFER):
+      task = task_class(self.config, mode)
+      logging.info(f"mode: {mode}")
+      for i in range(10):
+        for utt, segid, feat, spkid in task.generate_data():
+          logging.info(
+              f"SpkUttTask: generate_data: {utt} {segid} {feat.shape} {spkid}")
+
 
 if __name__ == '__main__':
-  logging.set_verbosity(logging.DEBUG)
+  logging.set_verbosity(logging.INFO)
   tf.test.main()

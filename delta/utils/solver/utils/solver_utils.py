@@ -16,9 +16,14 @@
 """Solver utilities."""
 
 import os
-import tensorflow as tf
+import re
+from pathlib import Path
+import numpy as np
+import delta.compat as tf
 from absl import logging
+import shutil
 
+from delta import utils
 from delta.utils import metrics
 
 
@@ -56,6 +61,18 @@ def to_saved_model(config, sess, inputs: dict, outputs: dict):
       tf.compat.as_bytes(export_path_base), tf.compat.as_bytes(model_version))
   export_path = os.path.abspath(export_path)
   logging.info('Exporting model to: {}'.format(export_path))
+  if os.path.exists(export_path):
+    files = [
+        one.decode()
+        for one in os.listdir(export_path)
+        if isinstance(one, bytes)
+    ]
+    if "variables" in files:
+      cmd = input(
+          f"Export directory already exists, and isn't empty. Overwrite? [y/n]"
+      ).strip().lower()
+      if cmd == "" or cmd == "y":
+        shutil.rmtree(export_path)
   builder = tf.saved_model.builder.SavedModelBuilder(export_path)
   # Build the signature_def_map.
   signature_def = tf.saved_model.predict_signature_def(inputs, outputs)
@@ -80,6 +97,89 @@ def save_infer_res(config, logits, preds):
                  "\t{}\n".format(pred))
 
 
+def get_model_file(dir_name, file_name_pattern, mode, model_load_type,
+                   specified_model_file_name):
+  """
+    Return model file according the specified model_load_type
+    :param dir_name: the folder path where a file search will start
+    :param file_name_pattern: the filename pattern that will be matched,
+                              when searching model file with model_load_type=latest
+    :param mode: which kind of command is performing [train, eval, infer]
+    :param model_load_type: restore which kind of model [best, lastest, scratch, specific]
+    :param specified_model_file_name: the model file which will be restored 
+                                      with model_load_type=specific
+    """
+  assert model_load_type in (None, "best", "latest", "scratch", "specific")
+
+  if model_load_type is None:
+    logging.warning("The values of model_load_type is not specified.")
+    model_load_type = "latest" if mode == utils.TRAIN else "best"
+    logging.warning("For the {} command, model_load_type:{} is adopted.".format(
+        mode, model_load_type))
+
+  #model_load_type can not be 'scratch' when performing EVAL or INFER command
+  if model_load_type == 'scratch' and mode != utils.TRAIN:
+    model_load_type = "best"
+    logging.warning(
+        "The model_load_type cannot be scratch when performing {} command, and is changed to {}"
+        .format(mode, model_load_type))
+
+  #get the path of model file according the specificed model_load_type
+  model_file_name = None
+  if model_load_type == "specific":
+    model_file_name = Path(dir_name).joinpath(specified_model_file_name)
+    #the value of model_load_type will be changed to latest when specified_model_file_name is None
+    if not model_file_name.exists():
+      model_load_type = "latest"
+      logging.warning(
+          "The specified model file {} is not exist, model_load_type:{} is adopted"
+          .format(model_file_name, model_load_type))
+
+  if model_load_type == "latest":
+    model_file_name = get_most_recently_modified_file_matching_pattern(
+        dir_name, file_name_pattern)
+  elif model_load_type == "best":
+    model_file_name = Path(dir_name).joinpath('best_model.ckpt')
+
+  #verify the existence of the file
+  #model_file_name will be None when
+  #     1.model_load_type=scratch
+  #     2.no model_file is found with model_load_type=latest
+  if model_file_name is None:
+    logging.warning(
+        'No model file is found in {} with model_load_type={}'.format(
+            dir_name, model_load_type))
+    if mode == utils.TRAIN:
+      model_load_type = 'scratch'
+      model_file_name = None
+      logging.warning('The model will be trained with model_load_type:scratch')
+    else:
+      assert False, '{} END, since no model file is found'.format(mode)
+
+  return model_load_type, model_file_name
+
+
+def get_most_recently_modified_file_matching_pattern(dir_name,
+                                                     file_name_pattern):
+  """Return the most recently checkpoint file matching file_name_pattern"""
+  file_name_regex = '^' + re.sub(r'{.*}', r'.*', file_name_pattern) + '$'
+
+  tf_checkpoint_file = tf.train.latest_checkpoint(dir_name)
+  if tf_checkpoint_file is not None and re.match(file_name_regex,
+                                                 tf_checkpoint_file.name):
+    return tf_checkpoint_file
+
+  file_list = [
+      file_name for file_name in Path(dir_name).iterdir()
+      if re.match(file_name_regex, file_name.name)
+  ]
+  file_time_list = [single_file.stat().st_mtime for single_file in file_list]
+  file_sort_by_time = np.argsort(file_time_list)
+  latest_file = file_list[
+      file_sort_by_time[-1]] if file_sort_by_time.shape[0] > 0 else None
+  return latest_file
+
+
 def run_metrics(config, y_preds, y_ground_truth, mode):
   """Run metrics for one output"""
   metcs = metrics.get_metrics(
@@ -92,17 +192,3 @@ def run_metrics(config, y_preds, y_ground_truth, mode):
   else:
     for key in sorted(metcs.keys()):
       logging.info(key + ":" + str(metcs[key]))
-
-
-class DatasetInitializerHook(tf.train.SessionRunHook):
-
-  def __init__(self, iterator, init_feed_dict):
-    self._iterator = iterator
-    self._init_feed_dict = init_feed_dict
-
-  def begin(self):
-    self._initializer = self._iterator.initializer
-
-  def after_create_session(self, session, coord):
-    del coord
-    session.run(self._initializer, self._init_feed_dict)

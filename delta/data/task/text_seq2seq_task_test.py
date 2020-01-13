@@ -18,9 +18,10 @@
 import os
 from pathlib import Path
 import numpy as np
-import tensorflow as tf
+import delta.compat as tf
 from absl import logging
 from delta import utils
+from delta import PACKAGE_ROOT_DIR
 from delta.data.task.text_seq2seq_task import TextS2STask
 from delta.utils.register import import_all_modules_for_register
 
@@ -29,12 +30,11 @@ class TextS2STaskTest(tf.test.TestCase):
   ''' sequence to sequence task test'''
 
   def setUp(self):
-    ''' set up'''
+    super().setUp()
     import_all_modules_for_register()
-    main_root = os.environ['MAIN_ROOT']
-    main_root = Path(main_root)
-    self.config_file = main_root.joinpath(
-        'egs/mock_text_seq2seq_data/seq2seq/v1/config/transformer-s2s.yml')
+    package_root = Path(PACKAGE_ROOT_DIR)
+    self.config_file = package_root.joinpath(
+        '../egs/mock_text_seq2seq_data/seq2seq/v1/config/transformer-s2s.yml')
 
   def tearDown(self):
     ''' tear down '''
@@ -50,18 +50,17 @@ class TextS2STaskTest(tf.test.TestCase):
     task_config["split_by_space"] = False
     task_config["use_word"] = True
 
-    # generate_mock_files(config)
-    task = TextS2STask(config, utils.TRAIN)
+    # test offline data for 'train'
 
-    # test offline data
+    task = TextS2STask(config, utils.TRAIN)
     data = task.dataset()
     self.assertTrue("input_x_dict" in data and
                     "input_enc_x" in data["input_x_dict"] and
                     "input_dec_x" in data["input_x_dict"])
     self.assertTrue("input_y_dict" in data and
                     "input_y" in data["input_y_dict"])
-    with self.session() as sess:
-      sess.run(data["iterator"].initializer, feed_dict=data["init_feed_dict"])
+    with self.cached_session(use_gpu=False, force_gpu=False) as sess:
+      sess.run(data["iterator"].initializer)
       res = sess.run([
           data["input_x_dict"]["input_enc_x"],
           data["input_x_dict"]["input_dec_x"], data["input_y_dict"]["input_y"],
@@ -78,6 +77,22 @@ class TextS2STaskTest(tf.test.TestCase):
       self.assertEqual(np.shape(res[2])[0], 16)
       self.assertEqual(np.shape(res[3])[0], 16)
 
+    # test offline data for 'infer'
+    task = TextS2STask(config, utils.INFER)
+    task.infer_without_label = True
+    data = task.dataset()
+    self.assertTrue("input_x_dict" in data and
+                    "input_enc_x" in data["input_x_dict"])
+    with self.cached_session(use_gpu=False, force_gpu=False) as sess:
+      sess.run(data["iterator"].initializer)
+      res = sess.run([data["input_x_dict"]["input_enc_x"], data["input_x_len"]])
+
+      logging.debug(res[0][0])
+      logging.debug(res[1][0])
+
+      self.assertEqual(np.shape(res[0])[0], 16)
+      self.assertEqual(np.shape(res[1])[0], 16)
+
     # test online data
     export_inputs = task.export_inputs()
     self.assertTrue("export_inputs" in export_inputs and
@@ -85,8 +100,8 @@ class TextS2STaskTest(tf.test.TestCase):
     input_sentence = export_inputs["export_inputs"]["input_sentence"]
     input_x = export_inputs["model_inputs"]["input_enc_x"]
 
-    with self.session() as sess:
-      sess.run(data["iterator"].initializer, feed_dict=data["init_feed_dict"])
+    with self.cached_session(use_gpu=False, force_gpu=False) as sess:
+      sess.run(data["iterator"].initializer)
       res = sess.run(
           input_x,
           feed_dict={

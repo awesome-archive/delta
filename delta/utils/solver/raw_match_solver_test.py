@@ -18,21 +18,22 @@
 import os
 from pathlib import Path
 from absl import logging
-import tensorflow as tf
+import delta.compat as tf
 
 from delta import utils
 from delta.utils.solver.raw_match_solver import RawMatchSolver
 from delta.utils.register import import_all_modules_for_register
+from delta import PACKAGE_ROOT_DIR
 
 
 # pylint: disable=missing-docstring
 class RawMatchSolverTest(tf.test.TestCase):
   # pylint: disable=invalid-name
   def setUp(self):
-    main_root = os.environ['MAIN_ROOT']
-    main_root = Path(main_root)
-    self.config_file = main_root.joinpath(
-        'egs/mock_text_match_data/text_match/v1/config/rnn-match-mock.yml')
+    super().setUp()
+    package_root = Path(PACKAGE_ROOT_DIR)
+    self.config_file = package_root.joinpath(
+        '../egs/mock_text_match_data/text_match/v1/config/rnn-match-mock.yml')
     self.config = utils.load_config(self.config_file)
     import_all_modules_for_register()
 
@@ -63,7 +64,7 @@ class RawMatchSolverTest(tf.test.TestCase):
     # load the model and run
     graph = tf.Graph()
     with graph.as_default():  # pylint: disable=not-context-manager
-      with self.session() as sess:
+      with self.cached_session(use_gpu=False, force_gpu=False) as sess:
         tf.saved_model.loader.load(sess, [tf.saved_model.tag_constants.SERVING],
                                    export_path)
 

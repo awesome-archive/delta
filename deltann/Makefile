@@ -15,7 +15,7 @@
 # ==============================================================================
 
 # Find where we're running from, so we can store generated files here.
-.PHONY: all example clean
+.PHONY: all examples clean
 
 SHELL=/bin/bash
 
@@ -46,8 +46,10 @@ TARGET := $(HOST_OS)
 # arch
 TARGET_ARCH := $(HOST_ARCH)
 # engine
-ENGINE := tf
+ENGINE := TF
 $(info $(origin ENGINE))
+# debug mode
+DEBUG := true
 
 GENDIR := $(MAKEFILE_DIR)/.gen/
 OBJDIR := $(GENDIR)obj/
@@ -61,19 +63,25 @@ CC := gcc
 CXX := g++
 AR := ar
 
-CFLAGS := -g -O2
-CXXFLAGS := -O2 -std=c++11 -fPIC -DDELTANN_VERSION=\"$(shell git rev-parse --short HEAD)\" -DNDEBUG
-LDFLAGS := -Wl,--version-script=deltann_version_script.lds
+CFLAGS := -O2
+CXXFLAGS := -std=c++11 -fPIC -DDELTANN_VERSION=\"$(shell git rev-parse --short HEAD)\"
+LDFLAGS :=
+ifeq ($(DEBUG), true)
+  CXXFLAGS += -g
+else
+  CXXFLAGS += -DNDEBUG -O3 
+  LDFLAGS += -Wl,--version-script=deltann_version_script.lds
+endif
 ARFLAGS := -r
 
 YAML := $(ROOT_DIR)/../tools/yaml/yaml-cpp
-JSONCPP := $(ROOT_DIR)/../tools/jsoncpp
+JSONCPP := $(ROOT_DIR)/../tools/jsoncpp/
 HTTP := $(ROOT_DIR)/../tools/https_client/
 MBEDTLS := $(ROOT_DIR)/../tools/mbedtls
 
 INCLUDES := -I$(ROOT_DIR) -I$(YAML)/include -I$(JSONCPP)/include -I$(HTTP) -I$(MBEDTLS)/include
 
-LIBS := -lpthread -lstdc++ -ldl -L$(JSONCPP)/src/lib_json -ljsoncpp
+LIBS := -lpthread -lstdc++ -ldl -L$(JSONCPP)/build-release_shared_g++/ -ljsoncpp
 
 include $(MAKEFILE_DIR)/targets/${TARGET}_makefile.inc
 
@@ -95,7 +103,8 @@ export JSONCPP
 
 export LIBS
 
-SRCS := $(wildcard core/*.cc core/utils/*.cc api/*.cc)
+TEST := $(wildcard core/*_test.cc core/utils/*_test.cc api/*_test.cc)
+SRCS := $(filter-out $(TEST) , $(wildcard core/*.cc core/utils/*.cc api/*.cc))
 OBJS := $(addprefix $(OBJDIR), $(patsubst %.cc, %.o,$(SRCS)))
 STATIC_LIB := $(LIBDIR)libdeltann.a
 SHARED_LIB := $(LIBDIR)libdeltann.so
@@ -125,7 +134,7 @@ $(OBJDIR)%.o:%.cc
 	-@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
 
-example:
+examples:
 	$(MAKE) -C $(EXAMPLE_DIR)
 
 clean:

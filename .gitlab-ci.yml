@@ -17,10 +17,6 @@ lint_and_unit_test:
     - "delta-ci-runner"
   only:
     - "master"
-    - "dev"
-    - "ci_test" # for CI test
-    - "187-fix-bugs-after-merge-pretrain-and-emotion"
-
   script:
     - env
     - cd ${CI_PROJECT_DIR} && source env.sh

@@ -1,4 +1,7 @@
-# DELTA - a DEep Language Technology plAtform 
+<div align="center">
+  <img src="docs/_static/delta_logo.png">
+</div>
+
 
 [![Build Status](https://travis-ci.org/didi/delta.svg?branch=master)](https://travis-ci.org/didi/delta)
 [![Contributions welcome](https://img.shields.io/badge/contributions-welcome-brightgreen.svg)](CONTRIBUTING.md)
@@ -6,12 +9,13 @@
 [![GitHub Issues](https://img.shields.io/github/issues/didi/delta.svg)](https://github.com/didi/delta/issues)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://github.com/didi/delta/blob/master/LICENSE)
 
+# DELTA - A DEep learning Language Technology plAtform
+
 
 ## What is DELTA?
 
-**DELTA** is a deep learning based end-to-end natural language and speech processing platform. 
-DELTA aims to provide easy and fast experiences for using, deploying, and developing natural language processing and speech models 
-for both academia and industry use cases. DELTA is mainly implemented using TensorFlow and Python 3.
+**DELTA** is a deep learning based end-to-end **natural language and speech processing** platform. 
+DELTA aims to provide easy and fast experiences for using, deploying, and developing natural language processing and speech models for both academia and industry use cases. DELTA is mainly implemented using TensorFlow and Python 3.
 
 For details of DELTA, please refer to this [paper](https://arxiv.org/abs/1908.01853).
 
@@ -37,26 +41,71 @@ It helps you to train, develop, and deploy NLP and/or speech models, featuring:
 - [Installation](#installation)
 - [Quick Start](#quick-start)
 - [Benchmarks](#benchmarks)
+- [FAQ](#faq)
 - [Contributing](#contributing)
+- [References](#references)
 - [License](#license)
-- [Acknowlegement](#acknowlegement)
+- [Acknowledgement](#acknowledgement)
 
 ## Installation
 
-### Quick Installation
+We provide several approach to install DELTA:
 
-We use [conda](https://conda.io/) to install required packages. Please [install conda](https://conda.io/en/latest/miniconda.html) if you do not have it in your system. 
+- If you are only interested in NLP tasks, you can [use `pip` to install](#install-from-pip
+) DELTA.
 
-We provide two options to install DELTA, `nlp` version or `full` version. 
-`nlp` version need minimal requirements and only installs NLP related packages: 
-Note: Users from mainland China may need to set up conda mirror sources, see [./tools/install/install-delta.sh](tools/install/install-delta.sh) for details.
+- If you are interested in both NLP and speech tasks, you can install DELTA [from the source code](#install-from-source-code).
+
+- If you are interested in model deployment, you may install DELTA [from the source code](#install-from-source-code) or [from `docker`](#install-from-docker).
+
+### Install from pip
+
+We provide the pip install support for `nlp` version of DELTA.
+
+**Note**: Users can still install DELTA from the source for both `nlp` and `speech` tasks.
+
+We recommend to create [conda](https://conda.io/) or
+[virtualenv](https://virtualenv.pypa.io/en/latest/) and install DELTA
+from pip in the virtual environment. For example
+```bash
+conda create -n delta-pip-py3.6 python=3.6
+conda activate delta-pip-py3.6
+```
+
+Please install TensorFlow 2.x if you have not installed it in your system.
+```bash
+pip install tensorflow
+```
+
+Then, simply install DELTA use the following command:
+```bash
+pip install delta-nlp
+```
+
+After install DELTA, you can follow this example to train NLP models or develop new models.
+[A Text Classification Usage Example for pip users](docs/tutorials/training/text_class_pip_example.md)
+
+### Install from Source Code
+
+To install from the source code, we use [conda](https://conda.io/) to
+install required packages. Please
+[install conda](https://conda.io/en/latest/miniconda.html) if you do not
+have it in your system.
+
+Also, we provide two options to install DELTA, `nlp` version or `full`
+version. `nlp` version needs minimal requirements and only installs NLP
+related packages:
+
 ```shell
 # Run the installation script for NLP version, with CPU or GPU.
 cd tools
 ./install/install-delta.sh nlp [cpu|gpu]
 ```
 
+**Note**: Users from mainland China may need to set up conda mirror sources, see [./tools/install/install-delta.sh](tools/install/install-delta.sh) for details.
+
 If you want to use both NLP and speech packages, you can install the `full` version. The full version needs [Kaldi](https://github.com/kaldi-asr/kaldi) library, which can be pre-installed or installed using our installation script.
+
 ```shell
 cd tools
 # If you have installed Kaldi
@@ -69,11 +118,11 @@ To verify the installation, run:
 
 ```shell
 # Activate conda environment
-conda activate delta-py3.6-tf1.14
+conda activate delta-py3.6-tf2.0.0
 # Or use the following command if your conda version is < 4.6
-# source activate delta-py3.6-tf1.14
+# source activate delta-py3.6-tf2.0.0
 
-# Add DELTA enviornment
+# Add DELTA environment
 source env.sh
 
 # Generate mock data for text classification.
@@ -89,7 +138,7 @@ python3 delta/main.py --cmd train_and_eval --config egs/mock_text_cls_data/text_
 
 For advanced installation, full version users, or more details, please refer to [manual installation](docs/installation/manual_setup.md).
 
-### Docker install
+### Install from Docker
 
 For Docker users, we provide images with DELTA installed. Please refer to [docker installation](docs/installation/using_docker.md).
 
@@ -123,7 +172,7 @@ There are several modes to start a DELTA pipeline:
 - infer
 - export_model
 
-Before run any command, please make sure you need to `source env.sh` in the current command prompt or a shell script.
+**Note**: Before run any command, please make sure you need to `source env.sh` in the current command prompt or a shell script.
 
 You can use `train_and_eval` to start the model training and evaluation:
 
@@ -156,12 +205,18 @@ python3 delta/main.py --cmd export_model --config <your configuration file>.yml
 For model deployment, we provide many tools in the DELTA-NN package.
 We organize the model deployment scripts under `./dpl` directory.
 
+* Docker pull `zh794390558/delta:deltann-cpu-py3` image, we test deployment under this env.
+* Download third-party pacakges by `cd tools && make deltann`.
 * Put `SavedModel` and configure `model.yaml` into `dpl/model`.
-* Use scripts under `dpl/gadapter` to convert model to other deployment model.  
+* Use scripts under `dpl/run.sh` to convert model to other deployment model, and compile libraries.
 * All compiled `tensorflow` libs and `delta-nn` libs are in `dpl/lib`.
+* All things need for deployment are under `dpl/output` dir.
 * Test, benchmark or serve under docker.
 
+For more information, please see [dpl/README.md](dpl/README.md).
+
 ## Benchmarks
+
 In DELTA, we provide experimental results for each task on public datasets as benchmarks. 
 For each task, we compare our implementation with a similar model chosen from a highly-cited publication.
 You can reproduce the experimental results using the scripts and configuration in the `./egs` directory. 
@@ -183,27 +238,47 @@ For more details, please refer to [released models](docs/released_models.md).
 
 ### Speech tasks
 
-TBA
-
 | Task | Model | DataSet | Metric | DELTA | Baseline | Baseline reference |
 |---|---|---|---|---|---|---|
-| Speech recognition | CTC |  |  |  |  |  |
-| Speech recognition | Seq2seq |  |  |  |  |  |
-| Speaker verfication |  |  |  |  |  |  |
-| Emotion recognition |  |  |  |  |  |  |
+| Speech recognition | CTC | HKUST | CER | 36.49 | 38.67 | Miao et al. (2016) |
+| Speaker verfication | TDNN | VoxCeleb | EER | 3.028 | 3.138 | Kaldi |
+| Emotion recognition | RNN-mean pool | IEMOCAP | Acc | 59.44 | 56.90 | Mirsamadi et al. (2017) |
 
+
+## FAQ
+
+See [FAQ](docs/faq.md) for more information.
 
 ## Contributing
 
 Any contribution is welcome. All issues and pull requests are highly appreciated!
 For more details, please refer to [the contribution guide](CONTRIBUTING.md).
 
+## References
+
+Please cite this [paper](https://arxiv.org/abs/1908.01853) when referencing DELTA.
+```bibtex
+@ARTICLE{delta,
+       author = {{Han}, Kun and {Chen}, Junwen and {Zhang}, Hui and {Xu}, Haiyang and
+         {Peng}, Yiping and {Wang}, Yun and {Ding}, Ning and {Deng}, Hui and
+         {Gao}, Yonghu and {Guo}, Tingwei and {Zhang}, Yi and {He}, Yahao and
+         {Ma}, Baochang and {Zhou}, Yulong and {Zhang}, Kangli and {Liu}, Chao and
+         {Lyu}, Ying and {Wang}, Chenxi and {Gong}, Cheng and {Wang}, Yunbo and
+         {Zou}, Wei and {Song}, Hui and {Li}, Xiangang},
+       title = "{DELTA: A DEep learning based Language Technology plAtform}",
+       journal = {arXiv e-prints},
+       year = "2019",
+       url = {https://arxiv.org/abs/1908.01853},
+}
+
+```
+
 ## License
 
 The DELTA platform is licensed under the terms of the Apache license.
 See [LICENSE](LICENSE) for more information.
 
-## Acknowlegement
+## Acknowledgement
 
 The DELTA platform depends on many open source repos.
 See [References](docs/references.md) for more information.

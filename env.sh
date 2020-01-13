@@ -13,6 +13,10 @@ else
     export MAIN_ROOT=$PWD/$(dirname $BASH_SOURCE)
 fi
 
+# need version
+export TF_VER=2.0.0
+export PY_VER=3.6
+
 # root dir
 export KALDI_ROOT=$MAIN_ROOT/tools/kaldi
 export ESPNET_ROOT=$MAIN_ROOT/tools/espnet
@@ -30,9 +34,19 @@ else
 fi
 
 # espnet
-export PATH=$OLD_PATH:$PATH:$ESPNET_ROOT/utils:$ESPNET_ROOT/bin:$MAIN_ROOT/utils:~/.local/bin
+export PATH=$OLD_PATH:$PATH:$ESPNET_ROOT/utils:$ESPNET_ROOT/bin:
 export OMP_NUM_THREADS=1
 
+# delta utils
+export PATH=$PATH:$MAIN_ROOT/utils
+
+# pip bins
+export PATH=$PATH:~/.local/bin
 
 # delta
 export PYTHONPATH=${PYTHONPATH}:$MAIN_ROOT:$MAIN_ROOT/tools/espnet
+
+# go
+if [ -e $MAIN_ROOT/tools/go.env ];then
+  source $MAIN_ROOT/tools/go.env
+fi

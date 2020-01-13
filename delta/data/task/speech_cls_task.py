@@ -26,7 +26,7 @@ from collections import defaultdict
 import librosa
 import numpy as np
 import pandas as pd
-import tensorflow as tf
+import delta.compat as tf
 from absl import logging
 from sklearn.model_selection import train_test_split
 
@@ -80,13 +80,16 @@ class SpeechClsTask(SpeechTask):
     else:
       self._stride = 1.0  # percent
     logging.info("Mode: {}, stride {}".format(mode, self._stride))
-
-    self._feature_size = self.taskconf['audio']['feature_size']
-    self._sample_rate = self.taskconf['audio']['sr']
-    self._input_channels = 3 if self.taskconf['audio']['add_delta_deltas'] else 1
     self._feature_type = self.taskconf['audio']['feature_extractor']
-    self._cmvn_path = self.taskconf['audio']['cmvn_path']
+    self._feature_name = self.taskconf['audio']['feature_name']
+    logging.info(
+        f"feature type: {self._feature_type}, feature name: {self._feature_name}"
+    )
+    self._sample_rate = self.taskconf['audio']['sr']
     self._winstep = self.taskconf['audio']['winstep']
+    self._feature_size = self.taskconf['audio']['feature_size']
+    self._input_channels = 3 if self.taskconf['audio']['add_delta_deltas'] else 1
+    self._cmvn_path = self.taskconf['audio']['cmvn_path']
     self._save_feat_path = self.taskconf['audio']['save_feat_path']
 
     # {class: [filename, duration, class],...}
@@ -164,7 +167,7 @@ class SpeechClsTask(SpeechTask):
     nframe = librosa.core.samples_to_frames(
         samples,
         hop_length=self.taskconf['audio']['winstep'] * self._sample_rate)
-    return nframe
+    return int(nframe)
 
   @property
   def nframe(self):
@@ -238,7 +241,8 @@ class SpeechClsTask(SpeechTask):
             files.append(filename)
 
       if self._feature_type == 'tffeat':
-        func = feat_lib.extract_filterbank
+        func = feat_lib.extract_feature
+        featconf.update({'feature_name': self._feature_name})
       elif self._feature_type == 'pyfeat':
         func = feat_lib.extract_feat
       else:
@@ -300,6 +304,8 @@ class SpeechClsTask(SpeechTask):
 
     # compute cmvn
     mean, var = utils.compute_cmvn(sums, square, count)
+    logging.info('mean:{}'.format(mean))
+    logging.info('var:{}'.format(var))
     if not dry_run:
       np.save(self._cmvn_path, (mean, var))
     logging.info('save cmvn:{}'.format(self._cmvn_path))
@@ -721,7 +727,7 @@ class SpeechClsTask(SpeechTask):
           labelid = self.class_id(label)
 
           if self.use_distilling:
-            soft_label = self.teacher(feat)
+            raise ValueError("Not Support distilation for *.wav input")
           else:
             class_num = self.taskconf['classes']['num']
             soft_label = [0] * class_num
@@ -756,10 +762,14 @@ class SpeechClsTask(SpeechTask):
             feat = np.pad(feat, [(0, seg[2]), (0, 0), (0, 0)], mode='constant')
 
           feat = feat[seg[0]:seg[1], :, :]
-          assert len(feat) == self.sample_to_frame(
-              self.example_len), "{} {} {} {} {} {}".format(
-                  filename, seg, len(feat), self.example_len,
-                  self.sample_to_frame(self.example_len), seg[2])
+          expect_nframes = self.sample_to_frame(self.example_len)
+          if len(feat) != expect_nframes:
+            logging.warn("{} {} {} {} {} {}".format(
+                filename, seg, len(feat), self.example_len,
+                self.sample_to_frame(self.example_len), seg[2]))
+            feat = np.pad(
+                feat, [(0, expect_nframes - len(feat)), (0, 0), (0, 0)],
+                mode='constant')
 
           if self.use_distilling:
             soft_label = self.teacher(feat)
@@ -855,7 +865,7 @@ class SpeechClsTask(SpeechTask):
     return ds.apply(
         tf.data.experimental.map_and_batch(
             make_example, batch_size,
-            drop_remainder=False)).prefetch(tf.contrib.data.AUTOTUNE)
+            drop_remainder=False)).prefetch(tf.data.experimental.AUTOTUNE)
 
 
 @registers.task.register
@@ -864,11 +874,13 @@ class IEmoCapTask(SpeechClsTask, tf.keras.utils.Sequence):
 
   def __init__(self, config, mode):
     super().__init__(config, mode)
-    self.shuffle = True
+    self.shuffle = mode == utils.TRAIN
     self.batch_size = self.config['solver']['optimizer']['batch_size']
-    self.subset = self.config['data']['task']['subset']
+    subset = self.config['data']['task']['subset']
+    subset = subset if subset else 'all'
+    self.subset = subset
     assert self.subset in ('impro', 'script', 'all')
-    logging.info(f"using subset data: {self.subset}")
+    logging.info(f"using subset data: {self.subset}, shuffle: {self.shuffle}")
 
     self.examples_meta = []
     for _, (filename, examples) in enumerate(self.data_items):
@@ -885,8 +897,11 @@ class IEmoCapTask(SpeechClsTask, tf.keras.utils.Sequence):
 
   def __len__(self):
     ''' the number of examples '''
-    steps_per_epoch = (len(self.examples_meta) -
-                       self.batch_size) / self.batch_size + 1
+    if self.mode == utils.TRAIN:
+      steps_per_epoch = (len(self.examples_meta) -
+                         self.batch_size) / self.batch_size + 1
+    else:
+      steps_per_epoch = len(self.examples_meta) / self.batch_size + 1
     return int(steps_per_epoch)
 
   def on_epoch_end(self):

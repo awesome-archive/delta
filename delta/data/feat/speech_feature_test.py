@@ -16,14 +16,13 @@
 ''' speech feature entrypoint unittest'''
 import os
 from pathlib import Path
-
 import librosa
 import numpy as np
-import tensorflow as tf
+import delta.compat as tf
 from absl import logging
-
 from delta.data.feat import speech_ops
 from delta.data.feat import speech_feature
+from delta import PACKAGE_ROOT_DIR
 
 
 #pylint: disable=too-many-instance-attributes
@@ -31,7 +30,7 @@ class SpeechFeatureTest(tf.test.TestCase):
   ''' speech feat entrypoint unittest'''
 
   def setUp(self):
-    ''' set up '''
+    super().setUp()
     self.winlen = 0.025
     self.winstep = 0.010
     self.feature_size = 40
@@ -39,11 +38,11 @@ class SpeechFeatureTest(tf.test.TestCase):
     self.nfft = 512
     self.feat_type = 'logfbank'
 
-    rootpath = Path(os.environ['MAIN_ROOT'])
+    package_root = Path(PACKAGE_ROOT_DIR)
     self.wavfile = str(
-        rootpath.joinpath('delta/data/feat/python_speech_features/english.wav'))
+        package_root.joinpath('data/feat/python_speech_features/english.wav'))
     self.featfile = str(
-        rootpath.joinpath('delta/data/feat/python_speech_features/english.npy'))
+        package_root.joinpath('data/feat/python_speech_features/english.npy'))
 
   def tearDown(self):
     ''' tear down '''
@@ -59,28 +58,46 @@ class SpeechFeatureTest(tf.test.TestCase):
     self.assertEqual(sample_rate, self.sr)
     self.assertAllClose(audio, audio_true)
 
-  def test_tf_feat(self):
+  def test_tf_fbank(self):
     ''' test tensorflow fbank feature interface '''
-    speech_feature.extract_filterbank((self.wavfile),
-                                      winlen=self.winlen,
-                                      winstep=self.winstep,
-                                      sr=self.sr,
-                                      feature_size=self.feature_size)
+    speech_feature.extract_feature((self.wavfile),
+                                   winlen=self.winlen,
+                                   winstep=self.winstep,
+                                   sr=self.sr,
+                                   feature_size=self.feature_size,
+                                   feature_name='fbank')
 
     feat = np.load(self.featfile)
+    logging.info(f"feat : {feat}")
     self.assertEqual(feat.shape, (425, 40, 1))
 
-    with self.session():
+    with self.cached_session(use_gpu=False, force_gpu=False):
       feat = speech_ops.delta_delta(feat, 2)
       self.assertEqual(feat.eval().shape, (425, 40, 3))
 
+  def test_tf_spec(self):
+    ''' test tensorflow spec feature interface '''
+    speech_feature.extract_feature((self.wavfile),
+                                   winlen=self.winlen,
+                                   winstep=self.winstep,
+                                   sr=self.sr,
+                                   feature_size=self.feature_size,
+                                   feature_name='spec')
+    feat = np.load(self.featfile)
+    self.assertEqual(feat.shape, (425, 129, 1))
+
+    with self.cached_session(use_gpu=False, force_gpu=False):
+      feat = speech_ops.delta_delta(feat, 2)
+      self.assertEqual(feat.eval().shape, (425, 129, 3))
+
   def test_tf_delta_detla(self):
     ''' test tensorflow delta delta '''
-    speech_feature.extract_filterbank((self.wavfile),
-                                      winlen=self.winlen,
-                                      winstep=self.winstep,
-                                      sr=self.sr,
-                                      feature_size=self.feature_size)
+    speech_feature.extract_feature((self.wavfile),
+                                   winlen=self.winlen,
+                                   winstep=self.winstep,
+                                   sr=self.sr,
+                                   feature_size=self.feature_size,
+                                   feature_name='fbank')
 
     feat = np.load(self.featfile)
     self.assertEqual(feat.shape, (425, 40, 1))

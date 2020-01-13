@@ -20,7 +20,7 @@
 import os
 import math
 import numpy as np
-import tensorflow as tf
+import delta.compat as tf
 from absl import logging
 
 from delta.utils.solver.base_solver import Solver
@@ -78,8 +78,7 @@ class KerasSolver(Solver):
 
     loss_fn = self.get_loss_fn()
 
-    multitask = self.config['solver']['optimizer']['multitask']
-    optimizer = self.get_optimizer(multitask)
+    optimizer = self.get_optimizer()
 
     self.model.compile(optimizer=optimizer, loss=loss_fn, metrics=self.metrics)
 

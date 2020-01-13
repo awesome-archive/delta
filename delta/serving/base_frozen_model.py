@@ -18,7 +18,7 @@ import os
 import sys
 import abc
 from absl import logging
-import tensorflow as tf
+import delta.compat as tf
 
 from delta import utils
 
@@ -57,7 +57,7 @@ class FrozenModel(ABCFrozenModel):
   def init_session(self, model, gpu_str):
     # The config for CPU usage
     config = tf.ConfigProto()
-    if gpu_str is None:
+    if not gpu_str:
       config.gpu_options.visible_device_list = ''  # pylint: disable=no-member
     else:
       config.gpu_options.visible_device_list = gpu_str  # pylint: disable=no-member
@@ -69,7 +69,7 @@ class FrozenModel(ABCFrozenModel):
 
       if tf.saved_model.maybe_saved_model_directory(model):
         #saved model
-        logging.info('saved model dir : {}'.format(model))
+        logging.info('saved model dir: {}'.format(model))
         self._sess = tf.Session(graph=self._graph, config=config)
         tf.saved_model.loader.load(self._sess,
                                    [tf.saved_model.tag_constants.SERVING],
@@ -99,6 +99,24 @@ class FrozenModel(ABCFrozenModel):
       self._graph = utils.load_frozen_graph(frozen_graph)
       self._sess = tf.Session(graph=self._graph, config=config)
 
+  def inspect_ops(self):
+    for op in self._graph.get_operations():
+      logging.info(f"ops: {op.name}")
+
+  def debug(self):
+    feed_dict = self.get_test_feed_dict()
+    while True:
+      tensor_name = input("Input debug tensor name: ").strip()
+      if tensor_name == "q":
+        sys.exit(0)
+      try:
+        debug_tensor = self.graph.get_tensor_by_name(tensor_name)
+      except Exception as e:
+        logging.error(e)
+        continue
+      res = self.sess.run(debug_tensor, feed_dict=feed_dict)
+      logging.info(f"Result for tensor {tensor_name} is: {res}")
+
   @property
   def graph(self):
     return self._graph
@@ -106,3 +124,10 @@ class FrozenModel(ABCFrozenModel):
   @property
   def sess(self):
     return self._sess
+
+
+class Evaluater(FrozenModel):
+
+  @abc.abstractmethod
+  def predict(self):
+    raise NotImplementedError()

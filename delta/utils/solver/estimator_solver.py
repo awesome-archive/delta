@@ -15,16 +15,18 @@
 # ==============================================================================
 ''' Estimator base class for classfication '''
 import os
+import functools
 from absl import logging
-import tensorflow as tf
+import delta.compat as tf
 from tensorflow.python import debug as tf_debug  #pylint: disable=no-name-in-module
+from tensorflow.python.estimator.canned import metric_keys
 # See: tensorboard/tensorboard/plugins/pr_curve/README.md
-# Note: tf.contrib.metrics.streaming_curve_points will only produce a series of points
-#  which won't be displayed by Tensorboard.
 from tensorboard.plugins.pr_curve import summary as pr_summary
 
 from delta import utils
+from delta.utils.hparam import HParams
 from delta.utils import metrics as metrics_lib
+from delta.utils import summary as summary_lib
 from delta.utils.register import registers
 from delta.utils.solver.base_solver import ABCEstimatorSolver
 
@@ -57,6 +59,18 @@ class EstimatorSolver(ABCEstimatorSolver):
     else:
       scaffold = None  # default
     return scaffold
+
+  def l2_loss(self, tvars=None):
+    _l2_loss = 0.0
+    weight_decay = self.config['solver']['optimizer'].get('weight_decay', None)
+    if weight_decay:
+      logging.info(f"add L2 Loss with decay: {weight_decay}")
+      with tf.name_scope('l2_loss'):
+        tvars = tvars if tvars else tf.trainable_variables()
+        tvars = [v for v in tvars if 'bias' not in v.name]
+        _l2_loss = weight_decay * tf.add_n([tf.nn.l2_loss(v) for v in tvars])
+        summary_lib.scalar('l2_loss', _l2_loss)
+    return _l2_loss
 
   def model_fn(self):
     ''' return model_fn '''
@@ -91,7 +105,7 @@ class EstimatorSolver(ABCEstimatorSolver):
             predictions=predictions,
             scaffold=self.get_scaffold(mode),
             export_outputs={
-                'predictions': tf.estimator.export.PredictOutput(softmax) #pylint: disable=no-member
+                'predictions': tf.estimator.export.PredictOutput(predictions) #pylint: disable=no-member
             })
 
       if 'soft_labels' in features.keys():
@@ -107,7 +121,6 @@ class EstimatorSolver(ABCEstimatorSolver):
       )
 
       if mode == utils.TRAIN:  #pylint: disable=no-else-return
-        multitask = self.config['solver']['optimizer']['multitask']
         if self.config['solver']['adversarial']['enable']:
           x = features['inputs']  #pylint: disable=invalid-name
           grad, = tf.gradients(loss, x)
@@ -125,11 +138,13 @@ class EstimatorSolver(ABCEstimatorSolver):
           )
           adv_alpha = self.config['solver']['adversarial']['adv_alpha']
           loss_all = (1 - adv_alpha) * loss + adv_alpha * loss_adv
-          multitask = True
         else:
           loss_all = loss
 
-        train_op = self.get_train_op(loss_all, multitask=multitask)
+        # L2 loss
+        loss_all += self.l2_loss()
+
+        train_op = self.get_train_op(loss_all)
         train_hooks = self.get_train_hooks(labels, logits, alpha=alignment)
 
         utils.log_vars('Global Vars', tf.global_variables())
@@ -156,7 +171,7 @@ class EstimatorSolver(ABCEstimatorSolver):
 
   def create_estimator(self):
     # Set model params
-    model_params = tf.contrib.training.HParams()
+    model_params = HParams()
 
     # create model func
     model_fn = self.model_fn()
@@ -203,7 +218,6 @@ class EstimatorSolver(ABCEstimatorSolver):
     nclass = self.config['data']['task']['classes']['num']
     metric_tensor = {
         "batch_accuracy": metrics_lib.accuracy(logits, labels),
-        "raw_labels": labels,
         'global_step': tf.train.get_or_create_global_step(),
     }
     if nclass > 100:
@@ -212,7 +226,7 @@ class EstimatorSolver(ABCEstimatorSolver):
     else:
       metric_tensor['batch_confusion'] = \
           metrics_lib.confusion_matrix(logits, labels, nclass)
-    tf.summary.scalar('batch_accuracy', metric_tensor['batch_accuracy'])
+    summary_lib.scalar('batch_accuracy', metric_tensor['batch_accuracy'])
     if alpha:
       metric_tensor.update({"alignment": alpha})
 
@@ -246,8 +260,10 @@ class EstimatorSolver(ABCEstimatorSolver):
 
   def get_eval_hooks(self, labels, logits):
     ''' lables: [batch]
-            logits: [batch, num_classes]
-        '''
+        logits: [batch, num_classes]
+    '''
+    nclass = self.config['data']['task']['classes']['num']
+
     eval_hooks = []
     metric_tensor = {}
     with tf.variable_scope('metrics'):
@@ -259,39 +275,42 @@ class EstimatorSolver(ABCEstimatorSolver):
           'accuracy':
               tf.metrics.accuracy(
                   labels=true_label, predictions=pred_label, weights=None),
-          'auc':
-              tf.metrics.auc(
-                  labels=true_label,
-                  predictions=softmax[:, -1],
-                  num_thresholds=20,
-                  curve='ROC',
-                  summation_method='trapezoidal'),
-          'precision':
-              tf.metrics.precision(
-                  labels=true_label, predictions=pred_label, weights=None),
-          'recall':
-              tf.metrics.recall(
-                  labels=true_label, predictions=pred_label, weights=None),
-          'tp':
-              tf.metrics.true_positives(
-                  labels=true_label, predictions=pred_label, weights=None),
-          'fn':
-              tf.metrics.false_negatives(
-                  labels=true_label, predictions=pred_label, weights=None),
-          'fp':
-              tf.metrics.false_positives(
-                  labels=true_label, predictions=pred_label, weights=None),
-          'tn':
-              tf.metrics.true_negatives(
-                  labels=true_label, predictions=pred_label, weights=None),
-          'pr_curve_eval':
-              pr_summary.streaming_op(
-                  name='pr_curve_eval',
-                  labels=true_label_bool,
-                  predictions=softmax[:, -1],
-                  num_thresholds=50,
-                  weights=None)
       }
+      if nclass == 2:
+        eval_metrics_ops.update({
+            'auc':
+                tf.metrics.auc(
+                    labels=true_label,
+                    predictions=softmax[:, -1],
+                    num_thresholds=20,
+                    curve='ROC',
+                    summation_method='trapezoidal'),
+            'precision':
+                tf.metrics.precision(
+                    labels=true_label, predictions=pred_label, weights=None),
+            'recall':
+                tf.metrics.recall(
+                    labels=true_label, predictions=pred_label, weights=None),
+            'tp':
+                tf.metrics.true_positives(
+                    labels=true_label, predictions=pred_label, weights=None),
+            'fn':
+                tf.metrics.false_negatives(
+                    labels=true_label, predictions=pred_label, weights=None),
+            'fp':
+                tf.metrics.false_positives(
+                    labels=true_label, predictions=pred_label, weights=None),
+            'tn':
+                tf.metrics.true_negatives(
+                    labels=true_label, predictions=pred_label, weights=None),
+            'pr_curve_eval':
+                pr_summary.streaming_op(
+                    name='pr_curve_eval',
+                    labels=true_label_bool,
+                    predictions=softmax[:, -1],
+                    num_thresholds=50,
+                    weights=None)
+        })
 
     metric_tensor.update({key: val[0] for key, val in eval_metrics_ops.items()})
     metric_hook = tf.train.LoggingTensorHook(
@@ -358,11 +377,12 @@ class EstimatorSolver(ABCEstimatorSolver):
       logging.info("{}: {}".format(key, value))
       if save:
         fobj.write("{}: {}\n".format(key, value))
-    f1_score = metrics_lib.f1_score(metrics['tp'], metrics['fp'], metrics['fn'],
-                                    metrics['tn'])
-    logging.info("F1: {}".format(f1_score))
-    if save:
-      fobj.write("F1: {}\n".format(f1_score))
+    if 'tp' in metrics and 'fp' in metrics and 'fn' in metrics and 'tn' in metrics:
+      f1_score = metrics_lib.f1_score(metrics['tp'], metrics['fp'],
+                                      metrics['fn'], metrics['tn'])
+      logging.info("F1: {}".format(f1_score))
+      if save:
+        fobj.write("F1: {}\n".format(f1_score))
 
   #pylint: disable=arguments-differ
   def eval(self, steps=None):
@@ -395,6 +415,16 @@ class EstimatorSolver(ABCEstimatorSolver):
         input_fn=self.input_fn(utils.TRAIN), max_steps=None, hooks=None)
 
     #pylint: disable=no-member
+    nclass = self.config['data']['task']['classes']['num']
+    # https://github.com/tensorflow/estimator/blob/master/tensorflow_estimator/python/estimator/canned/metric_keys.py
+    if nclass == 2:
+      default_key = metric_keys.MetricKeys.AUC
+    else:
+      default_key = metric_keys.MetricKeys.ACCURACY
+    compare_fn = functools.partial(
+        utils.metric_smaller, default_key=default_key)
+    logging.info(f"Using {default_key} metric for best exporter")
+
     eval_spec = tf.estimator.EvalSpec(
         input_fn=self.input_fn(utils.EVAL),
         steps=None,
@@ -412,7 +442,7 @@ class EstimatorSolver(ABCEstimatorSolver):
                 serving_input_receiver_fn=self.create_serving_input_receiver_fn(
                 ),
                 event_file_pattern='eval/*.tfevents.*',
-                compare_fn=utils.auc_smaller,
+                compare_fn=compare_fn,
                 assets_extra=None,
                 as_text=False,
                 exports_to_keep=1,
@@ -445,13 +475,12 @@ class EstimatorSolver(ABCEstimatorSolver):
   def export_model(self):
     saver_conf = self.config['solver']['saver']
     nn = self.create_estimator()  #pylint: disable=invalid-name
-    nn.export_savedmodel(
+    nn.export_saved_model(
         export_dir_base=os.path.join(saver_conf['model_path'], 'export'),
         serving_input_receiver_fn=self.create_serving_input_receiver_fn(),
         assets_extra=None,
         as_text=False,
         checkpoint_path=None,
-        strip_default_attrs=False,
     )
 
   def postproc_fn(self):

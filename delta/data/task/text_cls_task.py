@@ -16,15 +16,17 @@
 """Task class for text classification."""
 
 import collections
-import tensorflow as tf
+import delta.compat as tf
 from absl import logging
 
 from delta.data.task.base_text_task import TextTask
-from delta.data.utils.common_utils import load_cls_raw_data
-from delta.data.utils.common_utils import load_one_label_dataset
-from delta.data.utils.common_utils import load_dense_dataset
+
 from delta.data.utils.common_utils import load_npy
+from delta.data.utils.common_utils import get_file_len
+from delta.data.preprocess.text_ops import process_one_label_dataset
+from delta.data.preprocess.text_ops import load_dense_dataset
 from delta.data.preprocess.utils import load_vocab_dict
+from delta.data.preprocess.text_ops import load_textline_dataset
 from delta import utils
 from delta.utils.register import registers
 from delta.layers.utils import compute_sen_lens
@@ -38,12 +40,14 @@ class TextClsTask(TextTask):
 
   def __init__(self, config, mode):
     super().__init__(config, mode)
-
+    self.infer_no_label = self.config["data"][utils.INFER].get(
+        'infer_no_label', False)
     self.vocab_min_frequency = self.task_config['vocab_min_frequency']
     self.text_vocab_file_path = self.task_config['text_vocab']
     self.label_vocab_file_path = self.task_config['label_vocab']
     self.max_seq_len = self.task_config['max_seq_len']
     self.num_classes = self.task_config['classes']['num_classes']
+    self.use_true_length = self.model_config.get("use_true_length", False)
     self.split_token = self.model_config.get("split_token", "")
     self.use_dense = self.task_config["use_dense"]
     if self.use_dense:
@@ -53,21 +57,20 @@ class TextClsTask(TextTask):
     self.paths_after_pre_process = [
         one_path + ".after" for one_path in self.paths
     ]
+    self.infer_without_label = bool(mode == utils.INFER and self.infer_no_label)
+
     self.prepare()
 
   def generate_data(self):
     """Generate data for offline training."""
+    if self.infer_without_label:
+      column_num = 1
+      text_ds = load_textline_dataset(self.paths_after_pre_process, column_num)
+    else:
+      column_num = 2
+      label_ds, text_ds = load_textline_dataset(self.paths_after_pre_process,
+                                                column_num)
 
-    text, label = load_cls_raw_data(
-        paths=self.paths_after_pre_process, mode=self.mode)
-
-    text_placeholder = tf.placeholder(tf.string, shape=(None,), name="text")
-    label_placeholder = tf.placeholder(tf.string, name="label")
-    self.init_feed_dict[text_placeholder] = text
-    self.init_feed_dict[label_placeholder] = label
-    # logging.debug("init_feed_dict: {}".format(self.init_feed_dict))
-
-    text_ds = tf.data.Dataset.from_tensor_slices(text_placeholder)
     input_pipeline_func = self.get_input_pipeline(for_export=False)
 
     text_ds = text_ds.map(
@@ -89,7 +92,7 @@ class TextClsTask(TextTask):
       else:
         data_set = text_ds
     else:
-      label_ds = load_one_label_dataset(label_placeholder, self.config)
+      label_ds = process_one_label_dataset(label_ds, self.config)
       if self.use_dense:
         data_set = tf.data.Dataset.zip((text_ds, dense_ds, label_ds))
       else:
@@ -97,15 +100,15 @@ class TextClsTask(TextTask):
 
     vocab_dict = load_vocab_dict(self.text_vocab_file_path)
     vocab_size = len(vocab_dict)
-    data_size = len(text)
-    if self.split_token != "":
+    if self.use_true_length and self.split_token != "":
       if self.split_token not in vocab_dict:
         raise ValueError(
             "The Model uses split token: {}, not in corpus.".format(
                 self.split_token))
       self.config['data']['split_token'] = int(vocab_dict[self.split_token])
     self.config['data']['vocab_size'] = vocab_size
-    self.config['data']['{}_data_size'.format(self.mode)] = data_size
+    self.config['data']['{}_data_size'.format(self.mode)] = get_file_len(
+        self.paths_after_pre_process)
 
     return data_set
 
@@ -124,7 +127,7 @@ class TextClsTask(TextTask):
     """Inputs for exported model."""
     vocab_dict = load_vocab_dict(self.text_vocab_file_path)
     vocab_size = len(vocab_dict)
-    if self.split_token != "":
+    if self.use_true_length and self.split_token != "":
       if self.split_token not in vocab_dict:
         raise ValueError(
             "The Model uses split token: {}, not in corpus.".format(
@@ -200,7 +203,6 @@ class TextClsTask(TextTask):
         "input_x_dict": input_x_dict,
         "input_x_len": input_x_len,
         "iterator": iterator,
-        "init_feed_dict": self.init_feed_dict
     }
 
     if self.use_dense:

@@ -15,38 +15,12 @@
 # ==============================================================================
 """Common layers."""
 
-import tensorflow as tf
-import tensorflow.contrib.slim as slim  #pylint: disable=no-name-in-module
+import delta.compat as tf
 from absl import logging
 
 from delta.data.feat import speech_ops
 
 #pylint: disable=invalid-name
-
-
-def depthwise_separable_conv(inputs,
-                             num_pwc_filters,
-                             width_multiplier,
-                             scope,
-                             downsample=False):
-  """Depth-wise separable convolution."""
-  num_pwc_filters = round(num_pwc_filters * width_multiplier)
-  _stride = 2 if downsample else 1
-
-  # skip pointwise by setting num_outputs=None
-  depthwise_conv = slim.separable_convolution2d(
-      inputs,
-      num_outputs=None,
-      stride=_stride,
-      depth_multiplier=1,
-      kernel_size=[3, 3],
-      scope=scope + '/depthwise_conv')
-
-  bn = slim.batch_norm(depthwise_conv, scope=scope + '/dw_batch_norm')
-  pointwise_conv = slim.convolution2d(
-      bn, num_pwc_filters, kernel_size=[1, 1], scope=scope + '/pointwise_conv')
-  bn = slim.batch_norm(pointwise_conv, scope=scope + '/pw_batch_norm')
-  return bn
 
 
 def splice_layer(x, name, context):
@@ -136,7 +110,7 @@ def tdnn(x,
           name='DW',
           shape=[context, in_dim, out_dim],
           dtype=tf.float32,
-          initializer=tf.contrib.layers.xavier_initializer())
+          initializer=tf.glorot_uniform_initializer())
       x = tf.nn.conv1d(x, kernel, stride=1, padding='SAME')
       if has_bias:
         b = tf.get_variable(
@@ -150,22 +124,25 @@ def tdnn(x,
     return x
 
 
-def conv2d(x, name, filter_size, in_channels, out_channels, strides):
+def conv2d(x, name, filter_size, in_channels, out_channels, strides, bias=True):
   """2D convolution."""
   with tf.variable_scope(name):
     kernel = tf.get_variable(
         name='DW',
         shape=[filter_size[0], filter_size[1], in_channels, out_channels],
         dtype=tf.float32,
-        initializer=tf.contrib.layers.xavier_initializer())
-    b = tf.get_variable(
-        name='bias',
-        shape=[out_channels],
-        dtype=tf.float32,
-        initializer=tf.constant_initializer(0.0))
-    con2d_op = tf.nn.conv2d(
+        initializer=tf.initializers.glorot_uniform())
+    if bias:
+      b = tf.get_variable(
+          name='bias',
+          shape=[out_channels],
+          dtype=tf.float32,
+          initializer=tf.constant_initializer(0.0))
+    out = tf.nn.conv2d(
         x, kernel, [1, strides[0], strides[1], 1], padding='SAME')
-    return tf.nn.bias_add(con2d_op, b)
+    if bias:
+      out = tf.nn.bias_add(out, b)
+    return out
 
 
 def max_pool(x, ksize, strides):
@@ -180,16 +157,17 @@ def max_pool(x, ksize, strides):
 
 def linear(x, names, shapes, has_bias=True):
   """Linear Layer."""
+  assert len(shapes) == 2
   with tf.variable_scope(names):
     weights = tf.get_variable(
         name='weights',
         shape=shapes,
-        initializer=tf.truncated_normal_initializer(stddev=0.1))
+        initializer=tf.initializers.glorot_uniform())
     if has_bias:
       bias = tf.get_variable(
           name='bias',
           shape=shapes[1],
-          initializer=tf.constant_initializer(0.0))
+          initializer=tf.initializers.glorot_uniform())
       return tf.matmul(x, weights) + bias
     else:
       return tf.matmul(x, weights)
@@ -210,9 +188,14 @@ def attention(inputs, attention_size, time_major=False, return_alphas=False):
 
   # Trainable parameters
   W_omega = tf.get_variable(
-      tf.random_normal([hidden_size, attention_size], stddev=0.1))
-  b_omega = tf.get_variable(tf.random_normal([attention_size], stddev=0.1))
-  u_omega = tf.get_variable(tf.random_normal([attention_size, 1], stddev=0.1))
+      name='W_omega',
+      initializer=tf.random_normal([hidden_size, attention_size], stddev=0.1))
+  b_omega = tf.get_variable(
+      name='b_omega',
+      initializer=tf.random_normal([attention_size], stddev=0.1))
+  u_omega = tf.get_variable(
+      name='u_omega',
+      initializer=tf.random_normal([attention_size, 1], stddev=0.1))
 
   # Applying fully connected layer with non-linear activation to each of the B*T timestamps;
   #  the shape of `v` is (B,T,D)*(D,A)=(B,T,A), where A=attention_size
@@ -252,7 +235,8 @@ def embedding_look_up(text_inputs, vocab_size, embedding_size):
   """Embedding layer."""
   with tf.variable_scope("embedding"):
     W = tf.get_variable(
-        tf.random_uniform([vocab_size, embedding_size], -1.0, 1.0), "W")
+        name='W',
+        initializer=tf.random_uniform([vocab_size, embedding_size], -1.0, 1.0))
     embedding_chars = tf.nn.embedding_lookup(W, text_inputs)
     embedding_chars_expanded = tf.expand_dims(embedding_chars, -1)
   return embedding_chars_expanded
@@ -271,8 +255,10 @@ def conv_pool(embedded_chars_expanded, filter_sizes, embedding_size,
     with tf.variable_scope("conv-maxpool-%s" % filter_size):
       # Convolution Layer
       filter_shape = [filter_size, embedding_size, 1, num_filters]
-      W = tf.get_variable(tf.truncated_normal(filter_shape, stddev=0.1), "W")
-      b = tf.get_variable(tf.constant(0.1, shape=[num_filters]), "b")
+      W = tf.get_variable(
+          name='W', initializer=tf.truncated_normal(filter_shape, stddev=0.1))
+      b = tf.get_variable(
+          name='b', initializer=tf.constant(0.1, shape=[num_filters]))
       conv = tf.nn.conv2d(
           embedded_chars_expanded,
           W,

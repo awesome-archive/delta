@@ -65,6 +65,7 @@ tools/openssl
 tools/jsoncpp
 tools/mbedtls
 tools/https_client
+tools/go.env
 
 # lint
 cpplint.log
@@ -88,9 +89,34 @@ egs/*/*/*/exp
 egs/*/*/res
 egs/*/*/*/res
 
-# dpl copys
-dpl/lib/tensorflow/*
-dpl/lib/tflite/*
-dpl/lib/custom_ops/*
-dpl/lib/deltann/*
+# dpl
+*.tflite
+*.pb
+*.pbtxt
+dpl/lib/*
 dpl/test/*
+dpl/input_model
+!dpl/output_model/
+dpl/output_model/*
+!dpl/output_model/.gitkeep
+
+#deltann serving
+deltann/server/examples/output
+deltann/server/dpl
+deltann/server/examples/main
+deltann/server/examples/delta-service
+deltann/server/examples/log/
+deltann/server/examples/nohup.out
+dpl/output/
+.bash_history
+.viminfo
+
+# inner egs
+delta_inner
+
+# setup
+delta_nlp.egg-info/
+wheelhouse
+build
+dist
+py36venv

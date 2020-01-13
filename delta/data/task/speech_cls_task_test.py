@@ -20,19 +20,20 @@ import tempfile
 from pathlib import Path
 
 import numpy as np
-import tensorflow as tf
+import delta.compat as tf
 from absl import logging
 
 from delta import utils
 from delta.utils.register import registers
 from delta.utils.register import import_all_modules_for_register
+from delta import PACKAGE_ROOT_DIR
 
 
 class SpeechClsTaskTest(tf.test.TestCase):
   ''' emotion task test'''
 
   def setUp(self):
-    ''' set up'''
+    super().setUp()
     self.conf_str = '''
     data:
       train:
@@ -64,6 +65,7 @@ class SpeechClsTaskTest(tf.test.TestCase):
           preemph: 0.97 # default: 0.97
           # extractor
           feature_extractor: tffeat # `tffeat` to use TF feature_extraction .so library, 'pyfeat' to python_speech_feature
+          feature_name: fbank # fbank or spec
           save_feat_path: null  # null for dump feat with same dir of wavs
           feature_size: 40 # extract feature size
           add_delta_deltas: true # delta deltas
@@ -100,7 +102,6 @@ class SpeechClsTaskTest(tf.test.TestCase):
           decay_rate: 0.99  # the lr decay rate
           decay_steps: 100  # the lr decay_step for optimizer
         clip_global_norm: 3.0 # clip global norm
-        multitask: False # whether is multi-task
       metrics:
         pos_label: 1 # int, same to sklearn
         cals:
@@ -148,8 +149,8 @@ class SpeechClsTaskTest(tf.test.TestCase):
     if not negtive_path.exists():
       negtive_path.mkdir()
 
-    wav_path = Path(os.environ['MAIN_ROOT']).joinpath(
-        'delta/data/feat/python_speech_features/english.wav')
+    wav_path = Path(PACKAGE_ROOT_DIR).joinpath(
+        'data/feat/python_speech_features/english.wav')
     for i in range(10):
       pos_file = postive_path.joinpath("{}.wav".format(i))
       neg_file = negtive_path.joinpath("{}.wav".format(i))
@@ -234,7 +235,7 @@ class SpeechClsTaskTest(tf.test.TestCase):
     clip_ids = features['clipid']
     soft_labels = features['soft_labels']
 
-    with self.session() as sess:
+    with self.cached_session(use_gpu=False, force_gpu=False) as sess:
       while True:
         batch_inputs, batch_labels, batch_files, batch_clipids, labels_onehot, batch_soft_labels = \
            sess.run([samples, labels, filenames, clip_ids, tf.one_hot(labels, 2), soft_labels])

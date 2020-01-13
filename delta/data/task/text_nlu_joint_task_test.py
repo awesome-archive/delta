@@ -18,23 +18,23 @@
 import os
 from pathlib import Path
 import numpy as np
-import tensorflow as tf
+import delta.compat as tf
 from absl import logging
 from delta import utils
 from delta.data.task.text_nlu_joint_task import TextNLUJointTask
 from delta.utils.register import import_all_modules_for_register
+from delta import PACKAGE_ROOT_DIR
 
 
 class NLUJointTaskTest(tf.test.TestCase):
   ''' NLU joint task test'''
 
   def setUp(self):
-    ''' set up'''
+    super().setUp()
     import_all_modules_for_register()
-    main_root = os.environ['MAIN_ROOT']
-    main_root = Path(main_root)
-    self.config_file = main_root.joinpath(
-        'egs/mock_text_nlu_joint_data/nlu-joint/v1/config/nlu_joint.yml')
+    package_root = Path(PACKAGE_ROOT_DIR)
+    self.config_file = package_root.joinpath(
+        '../egs/mock_text_nlu_joint_data/nlu-joint/v1/config/nlu_joint.yml')
 
   def tearDown(self):
     ''' tear down '''
@@ -64,8 +64,8 @@ class NLUJointTaskTest(tf.test.TestCase):
     self.assertTrue("input_y_dict" in data and
                     "input_y" in data["input_y_dict"])
     input_intent_y, input_slots_y = data["input_y_dict"]["input_y"]
-    with self.session() as sess:
-      sess.run(data["iterator"].initializer, feed_dict=data["init_feed_dict"])
+    with self.cached_session(use_gpu=False, force_gpu=False) as sess:
+      sess.run(data["iterator"].initializer)
       res = sess.run([
           data["input_x_dict"]["input_x"], data["input_x_len"], input_intent_y,
           input_slots_y
@@ -89,8 +89,8 @@ class NLUJointTaskTest(tf.test.TestCase):
     input_sentence = export_inputs["export_inputs"]["input_sentence"]
     input_x = export_inputs["model_inputs"]["input_x"]
 
-    with self.session() as sess:
-      sess.run(data["iterator"].initializer, feed_dict=data["init_feed_dict"])
+    with self.cached_session(use_gpu=False, force_gpu=False) as sess:
+      sess.run(data["iterator"].initializer)
       res = sess.run(input_x, feed_dict={input_sentence: ["i am happy"]})
       logging.debug(res[0][:5])
       logging.debug(np.shape(res[0]))

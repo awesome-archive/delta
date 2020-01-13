@@ -16,8 +16,9 @@
 """Transformer layers."""
 import math
 
+from absl import logging
 import numpy as np
-import tensorflow as tf
+import delta.compat as tf
 from tensorflow.python.util import nest
 
 from delta.layers.base_layer import Layer

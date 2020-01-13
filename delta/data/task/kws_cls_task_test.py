@@ -16,7 +16,7 @@
 ''' kws task unittest'''
 import os
 from pathlib import Path
-import tensorflow as tf
+import delta.compat as tf
 from absl import logging
 
 from delta import utils
@@ -28,11 +28,10 @@ class KwsClsTaskTest(tf.test.TestCase):
   ''' kws task test'''
 
   def setUp(self):
-    ''' set up '''
+    super().setUp()
     import_all_modules_for_register()
     '''
-    main_root = os.environ['MAIN_ROOT']
-    main_root = Path(main_root)
+    package_root = Path(PACKAGE_ROOT_DIR)
     config_file = main_root.joinpath('delta/config/kws-cls/kws_speech_cls.yml')
     config = utils.load_config(config_file)
 
@@ -59,7 +58,7 @@ class KwsClsTaskTest(tf.test.TestCase):
     ''' dataset unittest'''
     pass
     '''
-    with self.session() as sess:
+    with self.cached_session(use_gpu=False, force_gpu=False) as sess:
       for _ in range(2):
         output = sess.run(self.one_element)
         logging.info(output)

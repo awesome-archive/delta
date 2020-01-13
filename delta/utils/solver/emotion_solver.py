@@ -18,12 +18,12 @@ import librosa
 from absl import logging
 
 #pylint: disable=no-name-in-module
-import tensorflow as tf
+import delta.compat as tf
 from tensorflow.python.keras.utils import losses_utils
 
 from delta import utils
 from delta.utils.solver.estimator_solver import EstimatorSolver
-from delta.utils.solver.asr_solver import AsrSolver
+from delta.utils.solver.keras_base_solver import KerasBaseSolver
 from delta.utils.register import registers
 
 
@@ -92,7 +92,7 @@ class EmotionSolver(EstimatorSolver):
 
 
 @registers.solver.register
-class EmoKerasSolver(AsrSolver):
+class EmoKerasSolver(KerasBaseSolver):
   ''' emotion keras solver '''
 
   def __init__(self, config):
@@ -132,8 +132,7 @@ class EmoKerasSolver(AsrSolver):
     self.model_fn(mode=utils.EVAL)
     assert self._built
 
-    callbacks = self.get_callbacks(
-        eval_ds, eval_task, monitor_used=self._monitor_used)
+    callbacks = []
 
     self.active_model.evaluate_generator(
         eval_task,

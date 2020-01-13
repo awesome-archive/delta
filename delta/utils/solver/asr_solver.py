@@ -19,93 +19,30 @@ from pathlib import Path
 from datetime import datetime
 
 from absl import logging
-import tensorflow as tf
+import delta.compat as tf
 
 #pylint: disable=import-error
-from tensorflow.keras.utils import multi_gpu_model
 from tensorflow.keras import backend as K
-from tensorflow.keras.callbacks import ModelCheckpoint
-from tensorflow.keras.callbacks import EarlyStopping
-from tensorflow.keras.callbacks import TensorBoard
-from tensorflow.keras.callbacks import CSVLogger
-from tensorflow.keras.callbacks import ReduceLROnPlateau
+from tensorflow.keras.models import Model
+from tensorflow.keras.layers import Lambda
+from tensorflow.keras.experimental import export_saved_model
 
 from delta import utils
 from delta.utils.decode import py_ctc
 from delta.utils import metrics as metrics_lib
-from delta.utils.solver.base_solver import Solver
+from delta.utils.solver.keras_base_solver import KerasBaseSolver
 from delta.utils.register import registers
 from delta.utils.solver.utils.callbacks import TokenErrMetricCallBack
+from delta.utils.decode.tf_ctc import ctc_greedy_decode
 
 
 #pylint: disable=too-many-instance-attributes,too-many-public-methods
 @registers.solver.register
-class AsrSolver(Solver):
+class AsrSolver(KerasBaseSolver):
   ''' asr keras solver'''
 
   def __init__(self, config):
     super().__init__(config)
-    self.batch_input_shape = None
-
-    self._solver = config['solver']
-    self._num_epochs = self._solver['optimizer']['epochs']
-
-    self._lr = self._solver['optimizer']['learning_rate']['rate']
-    self._decay_rate = self._solver['optimizer']['learning_rate']['decay_rate']
-    self._val_metric = self._solver['optimizer']['learning_rate'][
-        'type'] == 'val_metric'
-    if self._val_metric:
-      self._min_lr = self._solver['optimizer']['learning_rate']['min_rate']
-      self._patience = self._solver['optimizer']['learning_rate']['patience']
-
-    self._clipnorm = self._solver['optimizer']['clip_global_norm']
-    self._early_stopping = self._solver['optimizer']['early_stopping']['enable']
-
-    self._monitor_used = self._solver['metrics']['monitor_used']
-    self._model_path = self._solver['saver']['model_path']
-
-    logging.info('num_epochs : {}'.format(self._num_epochs))
-    logging.info('lr : {}'.format(self._lr))
-    logging.info('saver path : {}'.format(self._model_path))
-
-    devices, self._ngpu = utils.gpu_device_names()
-    logging.info(f"ngpu: {self._ngpu}, device list: {devices}")
-
-    #model
-    self._model = None
-    self._parallel_model = None
-    self._built = False
-
-  @property
-  def ngpu(self):
-    ''' number of gpus '''
-    return self._ngpu
-
-  @property
-  def raw_model(self):
-    ''' Delta RawModel '''
-    assert self._model is not None
-    return self._model
-
-  @property
-  def model(self):
-    ''' keras Model before doing `multi_gpu_model` '''
-    return self.raw_model.model
-
-  @property
-  def parallel_model(self):
-    ''' `multi_gpu_model` of keras Model '''
-    assert self._parallel_model is not None
-    return self._parallel_model
-
-  @property
-  def active_model(self):
-    ''' real keras model for run'''
-    return self.parallel_model if self.ngpu > 1 else self.model
-
-  def process_config(self, config):
-    ''' preprocess of config'''
-    return config
 
   def input_fn(self, mode):
     ''' input function for tf.data.Dataset'''
@@ -130,96 +67,6 @@ class AsrSolver(Solver):
     loss = {'ctc': lambda y_true, y_pred: tf.reduce_mean(y_pred)}
     return loss
 
-  def input_generator(self, input_iterator, input_task, cur_sess):
-    ''' dataset_based generator used in keras.model.fit_generator()
-        in future, it will be replaced by tf.keras.utils.Sequence'''
-    next_batch = input_iterator.get_next()
-    for _ in range(len(input_task)):
-      next_batch_data = cur_sess.run(next_batch)
-      yield next_batch_data
-
-  def get_run_opts_metas(self):
-    ''' RunOptions and RunMetadata '''
-    opts_conf = self.config['solver']['run_options']
-    run_opts = tf.RunOptions(
-        trace_level=opts_conf['trace_level'],
-        inter_op_thread_pool=opts_conf['inter_op_thread_pool'],
-        report_tensor_allocations_upon_oom=opts_conf[
-            'report_tensor_allocations_upon_oom'])
-    run_metas = tf.RunMetadata()
-
-    run_metas = None
-    run_opts = None
-    return run_opts, run_metas
-
-  def get_optimizer(self, multitask):
-    ''' keras optimizer '''
-    optconf = self.config['solver']['optimizer']
-    method = optconf['name']
-
-    learning_rate = optconf['learning_rate']['rate']
-    if method == 'adam':
-      opt = tf.keras.optimizers.Adam(learning_rate=learning_rate)
-    elif method == 'adadelta':
-      opt = tf.keras.optimizers.Adadelta(learning_rate=learning_rate)
-    else:
-      raise ValueError(f"Not support optimmizer: {method}")
-    return opt
-
-  #pylint: disable=arguments-differ
-  def model_fn(self, mode):
-    ''' build model like tf.estimator.Estimator'''
-    with tf.device('/cpu:0'):
-      self._model = super().model_fn()
-
-    if not self.model.built:
-      assert self.batch_input_shape
-      # data must be (features, labels), only using features as input
-      self.model.build(input_shape=self.batch_input_shape[0])
-
-    # parallel and compile model
-    self.build(multi_gpu=mode == utils.TRAIN)
-
-    if mode != utils.TRAIN:
-      model_path = Path(self._model_path).joinpath('best_model.h5')
-      logging.info(f"{mode}: load model from: {model_path}")
-      if self.model.built:
-        self.model.load_weights(str(model_path))
-      else:
-        self._model = tf.keras.models.load_model(str(model_path))
-
-  def build(self, multi_gpu=True):
-    ''' main entrypoint to build model '''
-    assert self.model
-
-    loss = self.get_loss()
-    multitask = self.config['solver']['optimizer']['multitask']
-    optimizer = self.get_optimizer(multitask)
-
-    run_opts, run_metas = self.get_run_opts_metas()
-
-    # compile model
-    if self.ngpu > 1 and multi_gpu:
-      self._parallel_model = multi_gpu_model(self.model, gpus=self.ngpu)
-      self.parallel_model.compile(
-          loss=loss,
-          optimizer=optimizer,
-          metrics=['accuracy'],
-          options=run_opts,
-          run_metadata=run_metas)
-    else:
-      self.model.compile(
-          loss=loss,
-          optimizer=optimizer,
-          metrics=['accuracy'],
-          options=run_opts,
-          run_metadata=run_metas)
-
-    # Print model summary
-    if self.model.built and self.model._is_graph_network:
-      self.model.summary()
-    self._built = True
-
   def get_metric_callbacks(self, eval_gen, eval_task, monitor_used,
                            decoder_type):
     ''' metric_specific callbacks'''
@@ -234,85 +81,16 @@ class AsrSolver(Solver):
     logging.info(f"CallBack: Val Metric on {monitor_used}")
     return callbacks
 
-  def get_misc_callbacks(self, monitor_used=None):
-    '''misc_specific callbacks'''
-    callbacks = []
-    #tensorboard
-    tb_cb = TensorBoard(log_dir=self._model_path)
-    callbacks.append(tb_cb)
-    logging.info(f"CallBack: Tensorboard")
-
-    # metric history
-    metric_log = 'metrics.csv'
-    csv_logger = CSVLogger(
-        filename=Path(self._model_path).joinpath(metric_log), separator='\t')
-    callbacks.append(csv_logger)
-    logging.info(f"CallBack: Metric log to {metric_log}")
-
-    #save model
-    save_best = Path(self._model_path).joinpath('best_model.h5')
-    save_best_cb = ModelCheckpoint(
-        str(save_best),
-        monitor=monitor_used,
-        verbose=1,
-        save_best_only=True,
-        save_weights_only=False,
-        period=1)
-    callbacks.append(save_best_cb)
-    logging.info(f"CallBack: Save Best Model")
-
-    # save checkpoint
-    save_ckpt = Path(self._model_path).joinpath('model.{epoch:02d}-{' +
-                                                monitor_used + ':.2f}.h5')
-    save_ckpt_cb = ModelCheckpoint(
-        str(save_ckpt),
-        monitor=monitor_used,
-        verbose=1,
-        save_best_only=False,
-        save_weights_only=False,
-        period=1)
-    callbacks.append(save_ckpt_cb)
-    logging.info(f"CallBack: Save Model Checkpoint.")
-
-    # nan check
-    callbacks.append(tf.keras.callbacks.TerminateOnNaN())
-
-    # Stops the model early if the metrics isn't improving
-    if self._early_stopping:
-      logging.info(f"CallBack: Early Stop on {monitor_used}")
-      es_cb = EarlyStopping(
-          monitor=monitor_used, min_delta=0, patience=5, verbose=0, mode='auto')
-      callbacks.append(es_cb)
-
-    # shcedule  learning rate
-    if self._val_metric:
-      logging.info(f"CallBack: Learning Rate Shcedule on {monitor_used}")
-      lr_shcedule = ReduceLROnPlateau(
-          monitor=monitor_used,
-          factor=self._decay_rate,
-          patience=self._patience,
-          verbose=1,
-          mode='auto',
-          min_delta=0.0001,
-          cooldown=0,
-          min_lr=self._min_lr)
-      callbacks.append(lr_shcedule)
-    return callbacks
-
   def get_callbacks(self,
                     eval_ds,
                     eval_task,
                     monitor_used='val_acc',
-                    decoder_type='beam_search'):
-    ''' callbacks for traning'''
-
-    #metric callbacks
+                    decoder_type='argmax'):
+    ''' callbacks for traning, metrics callbacks must be first, then misc callbacks'''
     callbacks = self.get_metric_callbacks(eval_ds, eval_task, monitor_used,
                                           decoder_type)
-    #misc callbacks
-    misc_callbacks = self.get_misc_callbacks(monitor_used)
-    callbacks.extend(misc_callbacks)
-
+    misc_cbs = super().get_callbacks(monitor_used)
+    callbacks.extend(misc_cbs)
     return callbacks
 
   def save_model(self):
@@ -339,7 +117,7 @@ class AsrSolver(Solver):
         workers=1,
         use_multiprocessing=False,
         shuffle=True,
-        initial_epoch=0)
+        initial_epoch=self._init_epoch)
 
   def get_metric_func(self):
     ''' build metric function '''
@@ -351,14 +129,15 @@ class AsrSolver(Solver):
   #pylint: disable=too-many-locals
   def eval(self):
     ''' only eval'''
-    mode = utils.EVAL
     #get eval dataset
     # data must be init before model build
-    eval_ds, eval_task = self.input_data(mode=mode)
+    logging.info("make Task")
+    eval_ds, eval_task = self.input_data(mode=utils.EVAL)
     eval_gen = tf.data.make_one_shot_iterator(eval_ds)
 
+    logging.info("build Model")
     #get eval model
-    self.model_fn(mode=mode)
+    self.model_fn(mode=utils.EVAL)
     assert self._built
 
     #load model
@@ -366,13 +145,18 @@ class AsrSolver(Solver):
 
     target_seq_list, predict_seq_list = [], []
     for _ in range(len(eval_task)):
-      batch_data = K.get_session().run(eval_gen.get_next()[0])
+      batch_data = tf.keras.backend.get_session().run(eval_gen.get_next()[0])
+
       batch_input = batch_data['inputs']
       batch_target = batch_data['targets'].tolist()
+
       batch_predict = eval_func(batch_input)[0]
+
       batch_decode = py_ctc.ctc_greedy_decode(batch_predict, 0, unique=True)
+
       target_seq_list += batch_target
       predict_seq_list += batch_decode
+
     token_errors = metrics_lib.token_error(
         predict_seq_list=predict_seq_list,
         target_seq_list=target_seq_list,
@@ -383,13 +167,11 @@ class AsrSolver(Solver):
   def train_and_eval(self):
     ''' train and eval '''
     # data must be init before model builg
-    backend_sess = K.get_session()
+    #backend_sess = K.get_session()
     train_ds, train_task = self.input_data(mode=utils.TRAIN)
-    train_gen = self.input_generator(train_ds.make_one_shot_iterator(),
-                                     train_task, backend_sess)
+    #train_gen = self.input_generator(tf.data.make_one_shot_iterator(train_ds), train_task, backend_sess, mode=utils.TRAIN)
     eval_ds, eval_task = self.input_data(mode=utils.EVAL)
-    eval_gen = self.input_generator(eval_ds.make_one_shot_iterator(), eval_task,
-                                    backend_sess)
+    #eval_gen = self.input_generator(tf.data.make_one_shot_iterator(eval_ds), eval_task, backend_sess, mode=utils.EVAL)
 
     self.model_fn(mode=utils.TRAIN)
     assert self._built
@@ -400,20 +182,20 @@ class AsrSolver(Solver):
     try:
       # Run training
       self.active_model.fit_generator(
-          train_gen,
+          train_task,
           steps_per_epoch=len(train_task),
           epochs=self._num_epochs,
           verbose=1,
           callbacks=callbacks,
-          validation_data=eval_gen,
+          validation_data=eval_task,
           validation_steps=len(eval_task),
           validation_freq=1,
           class_weight=None,
-          max_queue_size=50,
-          workers=1,
+          max_queue_size=100,
+          workers=4,
           use_multiprocessing=False,
           shuffle=True,
-          initial_epoch=0)
+          initial_epoch=self._init_epoch)
       #save model
       # not work for subclassed model, using tf.keras.experimental.export_saved_model
       #self.save_model()
@@ -446,7 +228,7 @@ class AsrSolver(Solver):
     infer_func = self.get_metric_func()
 
     for _ in range(len(infer_task)):
-      batch_data = K.get_session().run(infer_gen.get_next()[0])
+      batch_data = tf.keras.backend.get_session().run(infer_gen.get_next()[0])
       batch_input = batch_data['inputs']
       batch_uttid = batch_data['uttids'].tolist()
       batch_predict = infer_func(batch_input)[0]
@@ -457,4 +239,36 @@ class AsrSolver(Solver):
 
   def export_model(self):
     '''export saved_model'''
-    raise NotImplementedError()
+    mode = utils.INFER
+    self.model_fn(mode=mode)
+    assert self._built
+
+    input_feat = self.model.get_layer('inputs').input
+    input_length = self.model.get_layer('input_length').input
+
+    def ctc_greedy_decode_lambda_func(args):
+      y_pred, input_length = args
+      input_length = tf.cast(input_length, dtype=tf.int32)
+      decode_result, _ = ctc_greedy_decode(
+          logits=y_pred,
+          sequence_length=input_length,
+          merge_repeated=True,
+          blank_id=None)
+      return decode_result
+
+    model_outputs = self.model.get_layer('outputs').output
+    greedy_decode = Lambda(
+        ctc_greedy_decode_lambda_func, output_shape=(),
+        name='decode')([model_outputs, input_length])
+
+    model_to_export = Model(
+        inputs=[input_feat, input_length], outputs=greedy_decode)
+
+    model_export_path = Path(self._model_path).joinpath("export")
+    export_saved_model(
+        model=model_to_export,
+        saved_model_path=str(model_export_path),
+        custom_objects=None,
+        as_text=False,
+        input_signature=None,
+        serving_only=False)

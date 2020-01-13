@@ -17,18 +17,19 @@
 import os
 from pathlib import Path
 import numpy as np
-import tensorflow as tf
+import delta.compat as tf
 from absl import logging
 
 from delta.data.feat.speech_feature import load_wav
 from delta.data.feat import speech_ops as tffeat
+from delta import PACKAGE_ROOT_DIR
 
 
 class SpeechOpsFeatTest(tf.test.TestCase):
   ''' test speech feat ops'''
 
   def setUp(self):
-    ''' set up '''
+    super().setUp()
     self.sr_true = 8000
     #pylint: disable=invalid-name
     self.hp = tffeat.speech_params(
@@ -38,13 +39,13 @@ class SpeechOpsFeatTest(tf.test.TestCase):
         audio_desired_samples=1000,
         add_delta_deltas=False)
     self.wavpath = str(
-        Path(os.environ['MAIN_ROOT']).joinpath(
-            'delta/data/feat/python_speech_features/english.wav'))
+        Path(PACKAGE_ROOT_DIR).joinpath(
+            'data/feat/python_speech_features/english.wav'))
     _, self.audio_true = load_wav(self.wavpath, sr=self.sr_true)
 
   def test_read_wav(self):
     ''' test read wav op '''
-    with self.session():
+    with self.cached_session(use_gpu=False, force_gpu=False):
       wavfile = tf.constant(self.wavpath)
       # read wav
       audio, sample_rate = tffeat.read_wav(wavfile, self.hp)
@@ -55,7 +56,7 @@ class SpeechOpsFeatTest(tf.test.TestCase):
 
   def test_powspec_feat(self):
     ''' test spectrogram op '''
-    with self.session():
+    with self.cached_session(use_gpu=False, force_gpu=False):
       wavfile = tf.constant(self.wavpath)
       # read wav
       audio, sample_rate = tffeat.read_wav(wavfile, self.hp)
@@ -85,7 +86,7 @@ class SpeechOpsFeatTest(tf.test.TestCase):
         audio_desired_samples=1000,
         add_delta_deltas=False)
 
-    with self.session():
+    with self.cached_session(use_gpu=False, force_gpu=False):
       wavfile = tf.constant(self.wavpath)
       # read wav
       audio, sample_rate = tffeat.read_wav(wavfile, hp)
@@ -104,7 +105,7 @@ class SpeechOpsFeatTest(tf.test.TestCase):
         audio_desired_samples=1000,
         add_delta_deltas=True)
 
-    with self.session():
+    with self.cached_session(use_gpu=False, force_gpu=False):
       wavfile = tf.constant(self.wavpath)
       # read wav
       audio, sample_rate = tffeat.read_wav(wavfile, hp)
@@ -126,7 +127,7 @@ class SpeechOpsFeatTest(tf.test.TestCase):
         add_delta_deltas=True)
 
     batch_size = 2
-    with self.session():
+    with self.cached_session(use_gpu=False, force_gpu=False):
       wavfile = tf.constant(self.wavpath)
       # read wav
       audio, sample_rate = tffeat.read_wav(wavfile, hp)
@@ -149,7 +150,7 @@ class SpeechOpsFeatTest(tf.test.TestCase):
         audio_desired_samples=1000,
         add_delta_deltas=False)
 
-    with self.session():
+    with self.cached_session(use_gpu=False, force_gpu=False):
       wavfile = tf.constant(self.wavpath)
       audio, sample_rate = tffeat.read_wav(wavfile, self.hp)
       del sample_rate
@@ -177,7 +178,7 @@ class SpeechOpsFeatTest(tf.test.TestCase):
         audio_desired_samples=1000,
         add_delta_deltas=False)
 
-    with self.session():
+    with self.cached_session(use_gpu=False, force_gpu=False):
       wavfile = tf.constant(self.wavpath)
       audio, sample_rate = tffeat.read_wav(wavfile, self.hp)
       del sample_rate
@@ -198,7 +199,7 @@ class SpeechOpsFeatTest(tf.test.TestCase):
 
   def test_splice(self):
     ''' test batch splice frame '''
-    with self.session():
+    with self.cached_session(use_gpu=False, force_gpu=False):
       feat = tf.ones([1, 3, 2], dtype=tf.float32)
 
       for l_ctx in range(0, 4):

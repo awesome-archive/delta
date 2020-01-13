@@ -16,11 +16,11 @@
 """Recurrent neural network layers."""
 
 from absl import logging
-import tensorflow as tf
+import delta.compat as tf
 
 import delta
 from delta.layers.base_layer import Layer
-from tensorflow.contrib import seq2seq
+from tensorflow_addons import seq2seq
 SOS_ID = 4
 EOS_ID = 5
 
@@ -63,6 +63,9 @@ class BiRnn(Layer):
   def compute_output_shape(self, input_shape):
     return tf.TensorShape([input_shape[0], self.cell_dim * 2])
 
+  def compute_mask(self, inputs, mask=None):
+    return None
+
   def call(self, inputs, training=None, mask=None):
     out = self.bi_rnn(inputs)
     return out
@@ -95,6 +98,9 @@ class RnnAttentionEncoder(Layer):  # pylint: disable=too-many-instance-attribute
 
   def compute_output_shape(self, input_shape):
     return tf.TensorShape([input_shape[0], self.cell_dim * 2])
+
+  def compute_mask(self, inputs, mask=None):
+    return None
 
   def call(self, inputs, training=None, mask=None):
     out = self.sen_encoder(inputs)
@@ -150,7 +156,7 @@ class RnnEncoder(Layer):  # pylint: disable=too-many-instance-attributes
           inputs)
       state_h = tf.keras.layers.concatenate([forward_h, backward_h])
       state_c = tf.keras.layers.concatenate([forward_c, backward_c])
-      states = tf.contrib.rnn.LSTMStateTuple(state_h, state_c)
+      states = tf.nn.rnn_cell.LSTMStateTuple(state_h, state_c)
     else:
       out, forward_h, backward_h = self.sen_encoder(inputs)
       states = tf.keras.layers.concatenate([forward_h, backward_h])

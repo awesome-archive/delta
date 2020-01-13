@@ -19,11 +19,12 @@ import os
 from pathlib import Path
 from absl import logging
 import numpy as np
-import tensorflow as tf
+import delta.compat as tf
 
 from delta import utils
 from delta.data.task.text_match_task import TextMatchTask
 from delta.utils.register import import_all_modules_for_register
+from delta import PACKAGE_ROOT_DIR
 
 
 class TextMatchTaskTest(tf.test.TestCase):
@@ -31,11 +32,10 @@ class TextMatchTaskTest(tf.test.TestCase):
 
   # pylint: disable=invalid-name
   def setUp(self):
-    """ set up"""
-    main_root = os.environ['MAIN_ROOT']
-    main_root = Path(main_root)
-    self.config_file = main_root.joinpath(
-        'egs/mock_text_match_data/text_match/v1/config/rnn-match-mock.yml')
+    super().setUp()
+    package_root = Path(PACKAGE_ROOT_DIR)
+    self.config_file = package_root.joinpath(
+        '../egs/mock_text_match_data/text_match/v1/config/rnn-match-mock.yml')
     import_all_modules_for_register()
 
   def tearDown(self):
@@ -69,11 +69,10 @@ class TextMatchTaskTest(tf.test.TestCase):
                     "input_x_right" in data["input_x_dict"])
     self.assertTrue("input_y_dict" in data and
                     "input_y" in data["input_y_dict"])
-    # with self.session() as sess:
+    # with self.cached_session(use_gpu=False, force_gpu=False) as sess:
     #  sess.run(data["iterator"].initializer)
-    with self.session() as sess:
-      sess.run([data["iterator"].initializer, data["iterator_len"].initializer],
-               feed_dict=data["init_feed_dict"])
+    with self.cached_session(use_gpu=False, force_gpu=False) as sess:
+      sess.run([data["iterator"].initializer, data["iterator_len"].initializer])
       res = sess.run([
           data["input_x_dict"]["input_x_left"],
           data["input_x_dict"]["input_x_right"],
@@ -103,9 +102,9 @@ class TextMatchTaskTest(tf.test.TestCase):
     input_sent_right = export_inputs["export_inputs"]["input_sent_right"]
     input_x_left = export_inputs["model_inputs"]["input_x_left"]
     input_x_right = export_inputs["model_inputs"]["input_x_right"]
-    with self.session() as sess:
+    with self.cached_session(use_gpu=False, force_gpu=False) as sess:
       # sess.run(data["iterator"].initializer)
-      sess.run(data["iterator"].initializer, feed_dict=data["init_feed_dict"])
+      sess.run(data["iterator"].initializer)
       res1, res2 = sess.run(
           [input_x_left, input_x_right],
           feed_dict={

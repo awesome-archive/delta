@@ -18,7 +18,7 @@ import tempfile
 from pathlib import Path
 
 import numpy as np
-import tensorflow as tf
+import delta.compat as tf
 import h5py
 import kaldiio
 from absl import logging
@@ -40,7 +40,7 @@ from delta.data.utils.test_utils import generate_json_data
 class KaldiJsonReaderTest(tf.test.TestCase):
 
   def setUp(self):
-    ''' set up '''
+    super().setUp()
     self.conf_str = '''
     data:
       train:
@@ -68,6 +68,13 @@ class KaldiJsonReaderTest(tf.test.TestCase):
           type: char # char, bpe, wpm, word
           size: 3653 # vocab size in vocab_file
           path: '/nfs/cold_project/dataset/opensource/librispeech/espnet/egs/hkust/asr1/data/lang_1char/train_nodup_sp_units.txt' # path to vocab(default: 'vocab
+        batch:
+          batch_size: 32 # number of elements in a training batch
+          batch_bins: 0 # maximum number of bins (frames x dim) in a trainin batch
+          batch_frames_in: 0 # maximum number of input frames in a training batch
+          batch_frames_out: 0 # maximum number of output frames in a training batch
+          batch_frames_inout: 0 # maximum number of input+output frames in a training batch
+          batch_strategy: auto # strategy to count maximum size of batch(support 4 values: "auto", "seq", "frame", "bin")
         batch_mode: false # ture, user control batch; false, `generate` will yeild one example 
         num_parallel_calls: 12
         num_prefetch_batch: 2
@@ -116,9 +123,6 @@ class KaldiJsonReaderTest(tf.test.TestCase):
             name:
     solver:
       name: AsrSolver
-      quantization:
-        enable: false # whether to quantization model
-        quant_delay: 0 # Number of steps after which weights and activations are quantized during training
       adversarial:
         enable: false # whether to using adversiral training
         adv_alpha: 0.5 # adviseral alpha of loss
@@ -136,12 +140,6 @@ class KaldiJsonReaderTest(tf.test.TestCase):
       optimizer:
         name: adam
         epochs: 5 # maximum epochs
-        batch_size: 32 # number of elements in a training batch
-        batch_bins: 0 # maximum number of bins (frames x dim) in a trainin batch
-        batch_frames_in: 0 # maximum number of input frames in a training batch
-        batch_frames_out: 0 # maximum number of output frames in a training batch
-        batch_frames_inout: 0 # maximum number of input+output frames in a training batch
-        batch_strategy: auto # strategy to count maximum size of batch(support 4 values: "auto", "seq", "frame", "bin")
         loss: CTCLoss 
         label_smoothing: 0.0 # label smoothing rate
         learning_rate:
@@ -150,7 +148,6 @@ class KaldiJsonReaderTest(tf.test.TestCase):
           decay_rate: 0.99  # the lr decay rate
           decay_steps: 100  # the lr decay_step for optimizer
         clip_global_norm: 3.0 # clip global norm
-        multitask: False # whether is multi-task
         early_stopping: # keras early stopping
           enable: true
           monitor: val_loss

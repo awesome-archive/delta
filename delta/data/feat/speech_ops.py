@@ -18,11 +18,12 @@ import numpy as np
 from absl import logging
 
 #pylint: disable=no-name-in-module
-import tensorflow as tf
-from tensorflow.contrib.framework.python.ops import audio_ops as contrib_audio
+import delta.compat as tf
+from tensorflow.python.ops import gen_audio_ops as audio_ops
 
 from delta import utils
-from delta.layers.ops import py_x_ops
+from delta.utils.hparam import HParams
+from core.ops import py_x_ops
 
 
 #pylint: disable=invalid-name,too-many-arguments
@@ -36,7 +37,7 @@ def speech_params(sr=16000,
                   cmvn=False,
                   cmvn_path=''):
   ''' speech feat params '''
-  p = tf.contrib.training.HParams()
+  p = HParams()
   p.add_hparam("audio_sample_rate", sr)
   if dither:
     p.add_hparam("audio_dither", 1.0 / np.iinfo(np.int16).max)
@@ -68,18 +69,11 @@ def read_wav(wavfile, params):
   '''
   contents = tf.read_file(wavfile)
   #pylint: disable=no-member
-  waveforms = contrib_audio.decode_wav(
+  waveforms = tf.audio.decode_wav(
       contents,
       desired_channels=params.audio_desired_channels,
       desired_samples=params.audio_desired_samples,
   )
-  #waveforms = tf.contrib.ffmpeg.decode_audio(
-  #  contents,
-  #  file_format='wav',
-  #  samples_per_second = params.audio_sample_rate,
-  #  channel_count=params.audio_channels,
-  #)
-  #return waveforms[:, 0]
   return waveforms.audio, waveforms.sample_rate
 
 
@@ -103,7 +97,7 @@ def powspec_feat(samples,
   del preemph
 
   #pylint: disable=no-member
-  feat = contrib_audio.audio_spectrogram(
+  feat = audio_ops.audio_spectrogram(
       samples,
       window_size=winlen * sr,
       stride=winstep * sr,
@@ -247,7 +241,7 @@ def extract_feature(waveforms, params):
     # shape: [nframes, nbins, nchannels]
     fbank_size = utils.shape_list(mel_fbanks)
     #assert fbank_size[0] == 1
-    logging.info("fbank size : {}".format(fbank_size))
+    logging.debug("fbank size : {}".format(fbank_size))
 
     # This replaces CMVN estimation on data
     if not p.audio_global_cmvn:
@@ -303,8 +297,8 @@ def batch_extract_feature(waveforms, params):
   loop_vars = (time, waveforms, output_tas)
 
   parallel_iterations = 10
-  shape_invariants = tf.contrib.framework.nest.map_structure(
-      lambda t: tf.TensorShape(None), loop_vars)
+  shape_invariants = tf.nest.map_structure(lambda t: tf.TensorShape(None),
+                                           loop_vars)
 
   (time, inputs, output_tas) = tf.while_loop(
       _loop_continue,
@@ -361,8 +355,8 @@ def splice(feat, left_context, right_context):
     loop_vars = (time, T, context, left_context, right_context, output_tas)
 
     parallel_iterations = 10
-    shape_invariants = tf.contrib.framework.nest.map_structure(
-        lambda t: tf.TensorShape(None), loop_vars)
+    shape_invariants = tf.nest.map_structure(lambda t: tf.TensorShape(None),
+                                             loop_vars)
 
     (time, end_time, context, left_context, right_context,
      output_tas) = tf.while_loop(

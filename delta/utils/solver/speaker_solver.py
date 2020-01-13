@@ -16,7 +16,7 @@
 ''' Solver for speaker classification. '''
 from absl import logging
 import librosa
-import tensorflow as tf
+import delta.compat as tf
 
 from delta.utils.solver.estimator_solver import EstimatorSolver
 from delta.utils.register import registers
@@ -29,23 +29,28 @@ class SpeakerSolver(EstimatorSolver):
   def process_config(self, config):
     data_conf = config['data']
 
-    # add feature shape, withoud batch_size
-    if data_conf['task']['suffix'] == '.npy':
-      input_channels = 3 if data_conf['task']['audio']['add_delta_deltas'] else 1
-      nframe = librosa.time_to_frames(
-          data_conf['task']['audio']['clip_size'],
-          sr=data_conf['task']['audio']['sr'],
-          hop_length=data_conf['task']['audio']['winstep'] *
-          data_conf['task']['audio']['sr'])
-      feature_shape = [
-          nframe, data_conf['task']['audio']['feature_size'], input_channels
-      ]
-    else:
-      feature_shape = [
-          data_conf['task']['audio']['sr'] *
-          data_conf['task']['audio']['clip_size']
-      ]
-    data_conf['task']['audio']['feature_shape'] = feature_shape
+    feature_shape = data_conf['task']['audio'].get('feature_shape', None)
+
+    if not feature_shape:
+      # add feature shape, withoud batch_size
+      if data_conf['task']['suffix'] == '.npy':
+        input_channels = 3 if data_conf['task']['audio'][
+            'add_delta_deltas'] else 1
+        nframe = librosa.time_to_frames(
+            data_conf['task']['audio']['clip_size'],
+            sr=data_conf['task']['audio']['sr'],
+            hop_length=data_conf['task']['audio']['winstep'] *
+            data_conf['task']['audio']['sr'])
+        feature_shape = [
+            nframe, data_conf['task']['audio']['feature_size'], input_channels
+        ]
+      else:
+        feature_shape = [
+            data_conf['task']['audio']['sr'] *
+            data_conf['task']['audio']['clip_size']
+        ]
+      data_conf['task']['audio']['feature_shape'] = feature_shape
+    logging.info(f"FEATURE SHAPE: {feature_shape}")
     return config
 
   def create_serving_input_receiver_fn(self):
@@ -58,11 +63,6 @@ class SpeakerSolver(EstimatorSolver):
         features={
             'inputs':
                 tf.placeholder(name="inputs", shape=shape, dtype=tf.float32),
-            'texts':
-                tf.placeholder(
-                    name="texts",
-                    shape=(None, taskconf['text']['max_text_len']),
-                    dtype=tf.int32)
         },
         default_batch_size=None,
     )

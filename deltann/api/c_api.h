@@ -14,8 +14,8 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#ifndef DELTA_C_API_H_
-#define DELTA_C_API_H_
+#ifndef DELTANN_API_C_API_H_
+#define DELTANN_API_C_API_H_
 
 #ifdef __cplusplus
 extern "C" {
@@ -32,6 +32,8 @@ typedef struct {
   int size;  // byte_size;
   const char* input_name;
   const char* graph_name;
+  const int* shape;
+  int ndims;
 } Input;
 
 typedef void* ModelHandel;
@@ -80,4 +82,4 @@ DELTA_CAPI_EXPORT extern void DeltaUnLoadModel(ModelHandel model);
 }  // extern "C"
 #endif  // __cplusplus
 
-#endif  // DELTA_RUNTIME_H_
+#endif  // DELTANN_API_C_API_H_

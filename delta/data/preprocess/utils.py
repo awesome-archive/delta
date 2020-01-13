@@ -20,19 +20,19 @@ import pickle
 import collections
 import numpy as np
 from absl import logging
-import tensorflow as tf
+import delta.compat as tf
 
 from delta.data.utils.vocabulary import Vocabulary
 
 
 def get_pre_process_text_ds_iter(
-    text_placeholder,
+    text_ds,
     pipeline_func,
     num_parallel_calls,
     batch_size,
 ):
   """Get pre-process oprators."""
-  text_ds = tf.data.Dataset.from_tensor_slices(text_placeholder)
+
   text_ds = text_ds.map(pipeline_func, num_parallel_calls=num_parallel_calls)
 
   text_ds = text_ds.batch(batch_size)

@@ -18,7 +18,7 @@ import os
 from absl import logging
 
 import numpy as np
-import tensorflow as tf
+import delta.compat as tf
 #pylint: disable=no-name-in-module,no-member
 from tensorflow.python.client import device_lib
 from tensorflow.python.estimator.canned import metric_keys
@@ -138,28 +138,18 @@ def get_distribution_strategy(num_gpus, all_reduce_alg='nccl'):
   Args:
     num_gpus: Number of GPUs to run this model.
     all_reduce_alg: Specify which algorithm to use when performing all-reduce.
-      See tf.contrib.distribute.AllReduceCrossTowerOps for available algorithms.
-      If None, DistributionStrategy will choose based on device topology.
+      See tf.distribute.NcclAllReduce for available algorithms.
+      If None, Strategy will using nccl as default.
 
   Returns:
-    tf.contrib.distribute.DistibutionStrategy object.
+    tf.distribute.Strategy object.
   """
   if num_gpus == 0:  #pylint: disable=no-else-return
-    return tf.contrib.distribute.OneDeviceStrategy("device:CPU:0")
+    return tf.distribute.OneDeviceStrategy("device:CPU:0")
   elif num_gpus == 1:
-    return tf.contrib.distribute.OneDeviceStrategy("device:GPU:0")
+    return tf.distribute.OneDeviceStrategy("device:GPU:0")
   else:
-    if tf_version_satisfy('1.14'):
-      _cross_tower_ops = tf.contrib.distribute.AllReduceCrossDeviceOps
-    else:
-      _cross_tower_ops = tf.contrib.distribute.AllReduceCrossTowerOps
-
-    if all_reduce_alg:  #pylint: disable=no-else-return
-      return tf.contrib.distribute.MirroredStrategy(
-          num_gpus=num_gpus,
-          cross_tower_ops=_cross_tower_ops(all_reduce_alg, num_packs=num_gpus))
-    else:
-      return tf.contrib.distribute.MirroredStrategy(num_gpus=num_gpus)
+    return tf.distribute.MirroredStrategy(devices=None, cross_device_ops=None)
 
 
 def per_device_batch_size(batch_size, num_gpus):
@@ -229,19 +219,21 @@ def generate_synthetic_data(input_shape,
   return tf.data.Dataset.from_tensors(element).repeat(nepoch)
 
 
-def auc_smaller(best_eval_result, current_eval_result):
+def metric_smaller(best_eval_result,
+                   current_eval_result,
+                   default_key=metric_keys.MetricKeys.AUC):
   """Compares two evaluation results and returns true if the 2nd one is smaller.
               Both evaluation results should have the values for MetricKeys.LOSS, which are
               used for comparison.
               Args:
                 best_eval_result: best eval metrics.
                 current_eval_result: current eval metrics.
+                default_key: metric_keys.MericKeys
               Returns:
                 True if the loss of current_eval_result is smaller; otherwise, False.
               Raises:
                ValueError: If input eval result is None or no loss is available.
         """
-  default_key = metric_keys.MetricKeys.AUC
   if not best_eval_result or default_key not in best_eval_result:
     raise ValueError(
         'best_eval_result cannot be empty or no loss is found in it.')

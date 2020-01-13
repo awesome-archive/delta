@@ -17,28 +17,28 @@
 import os
 from pathlib import Path
 
-import tensorflow as tf
+import delta.compat as tf
 from absl import logging
 
 from delta.data.feat.speech_feature import load_wav
 from delta.data.feat import tf_speech_feature as tffeat
+from delta import PACKAGE_ROOT_DIR
 
 
 class SpeechFeatTest(tf.test.TestCase):
   ''' tf.signal feat unittest'''
 
   def setUp(self):
-    ''' set up '''
-    main_root = Path(os.environ['MAIN_ROOT'])
+    super().setUp()
+    package_root = Path(PACKAGE_ROOT_DIR)
     self.params = tffeat.speech_params(sr=8000, bins=40, cmvn=False)
     self.wavpath = str(
-        main_root.joinpath(
-            'delta/data/feat/python_speech_features/english.wav'))
+        package_root.joinpath('data/feat/python_speech_features/english.wav'))
     self.sr_true, self.audio_true = load_wav(str(self.wavpath), sr=8000)
 
   def test_extract_feature(self):
     ''' test extract feature '''
-    with self.session():
+    with self.cached_session(use_gpu=False, force_gpu=False):
       wavfile = tf.constant(self.wavpath)
 
       audio = tffeat.read_wav(wavfile, self.params)

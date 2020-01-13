@@ -5,14 +5,4 @@ COPY sources.list.ubuntu18.04 /etc/apt/sources.list
 COPY install.sh /install.sh
 RUN /bin/bash /install.sh
 
-#add user
-ENV ROLE deltann
-RUN adduser --disabled-password --gecos '' --shell '/bin/bash' $ROLE   && adduser $ROLE sudo   && echo '%sudo ALL=(ALL) NOPASSWD:ALL' >> /etc/sudoers
-
-USER $ROLE 
-
-# install gcc
-COPY install_user.sh /ci/install_user.sh
-RUN /bin/bash /ci/install_user.sh
-
 CMD ["/bin/bash", "-c"]

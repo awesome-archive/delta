@@ -15,7 +15,7 @@ limitations under the License.
 ==============================================================================*/
 
 #include "core/graph.h"
-#include "core/utils/config.h"
+#include "core/config.h"
 
 namespace delta {
 namespace core {
@@ -61,13 +61,12 @@ Graph::Graph(const YAML::Node& cfg) : _cfg(cfg) {
     } else if (server_type == "remote") {
       LOG_INFO << "load remote model";
       _model_meta.remote.hostname = cfg["remote"]["host"].as<string>();
-      _model_meta.remote.port = cfg["remote"]["port"].as<unsigned short>();
+      _model_meta.remote.port = cfg["remote"]["port"].as<std::uint16_t>();
       _model_meta.remote.model_name = cfg["remote"]["model_name"].as<string>();
 
     } else {
       LOG_FATAL << "Error, not support server_type " << server_type;
     }
-
   } catch (const YAML::Exception& e) {
     LOG_FATAL << "Error, read config failed: " << e.what();
   }
@@ -105,12 +104,12 @@ DeltaStatus Graph::add_inputs() {
         v.push_back(s[i].as<int>());
       }
       _inputs.insert(pair<string, Input>(
-          name, Input(name, id, Shape(v), delta_type_switch(dtype))));
+          name, Input(name, id, Shape(v), delta_str_dtype(dtype))));
     } else {
       LOG_INFO << "graph " << _name << " shape is None"
                << _cfg["inputs"][i]["shape"];
       _inputs.insert(
-          pair<string, Input>(name, Input(name, id, delta_type_switch(dtype))));
+          pair<string, Input>(name, Input(name, id, delta_str_dtype(dtype))));
     }
   }
 
@@ -130,7 +129,7 @@ DeltaStatus Graph::add_outputs() {
 
     int id = _cfg["outputs"][i]["id"].as<int>();
     _outputs.insert(
-        pair<string, Output>(name, Output(name, id, delta_type_switch(dtype))));
+        pair<string, Output>(name, Output(name, id, delta_str_dtype(dtype))));
   }
   return DeltaStatus::STATUS_OK;
 }
